@@ -17,7 +17,7 @@ import sibModel.SendSmtpEmailTo;
 @Service
 public class BrevoEmailService implements EmailService {
 
-    @Value("${brevo.api.key}")
+    @Value("${brevo.api.key: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}")
     private String apiKey;
 
     public void sendEmail(String toEmail, String subject, String htmlContent) {
