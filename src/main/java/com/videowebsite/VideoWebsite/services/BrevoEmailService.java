@@ -20,6 +20,11 @@ public class BrevoEmailService implements EmailService {
     @Value("${brevo.api.key}")
     private String apiKey;
 
+    @Value("${brevo.sender.email:Support@skillerclasses.com}")
+    private String senderEmail;
+    @Value("${brevo.sender.name:Skiller Classes}")
+    private String senderName;
+
     public void sendEmail(String toEmail, String subject, String htmlContent) {
         try {
             ApiClient defaultClient = Configuration.getDefaultApiClient();
@@ -28,8 +33,8 @@ public class BrevoEmailService implements EmailService {
             TransactionalEmailsApi apiInstance = new TransactionalEmailsApi();
 
             SendSmtpEmailSender sender = new SendSmtpEmailSender()
-                    .name("Skiller Classes")
-                    .email("rsuri95550@gmail.com");  // Use your verified sender
+                    .name(senderName)
+                    .email(senderEmail);
 
             List<SendSmtpEmailTo> toList = new ArrayList<>();
             toList.add(new SendSmtpEmailTo().email(toEmail));

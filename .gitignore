@@ -31,3 +31,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Ignore Firebase service account (should be stored in env vars/secrets, not in git)
+src/main/resources/serviceAccountKey.json
