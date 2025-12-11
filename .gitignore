@@ -34,3 +34,4 @@ build/
 
 # Ignore Firebase service account (should be stored in env vars/secrets, not in git)
 src/main/resources/serviceAccountKey.json
+src/main/resources/application.properties
