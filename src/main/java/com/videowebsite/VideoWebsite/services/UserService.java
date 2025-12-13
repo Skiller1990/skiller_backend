@@ -262,7 +262,13 @@ public class UserService {
                 "<p><a href=\"" + resetLink + "\">Reset your password</a></p>" +
                 "<p>If you didn't request this, you can safely ignore this email.</p>";
 
-        brevoEmailService.sendEmail(email, "Reset your Skiller Classes password", html);
+        try {
+            brevoEmailService.sendEmail(email, "Reset your Skiller Classes password", html);
+        } catch (Exception e) {
+            // Log and continue — don't fail the reset request if the email provider is down
+            System.err.println("Failed to send password reset email to " + email + ": " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     /**

@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import sendinblue.ApiClient;
+import sendinblue.ApiException;
 import sendinblue.Configuration;
 import sibApi.TransactionalEmailsApi;
 import sibModel.CreateSmtpEmail;
@@ -47,6 +48,16 @@ public class BrevoEmailService implements EmailService {
 
             CreateSmtpEmail response = apiInstance.sendTransacEmail(sendEmail);
             System.out.println("Email sent: " + response.getMessageId());
+        } catch (ApiException ae) {
+            // Log Brevo/SendinBlue API exception details to help debugging
+            System.out.println("Error sending email via Brevo: ApiException code=" + ae.getCode());
+            try {
+                System.out.println("Response body: " + ae.getResponseBody());
+                System.out.println("Response headers: " + ae.getResponseHeaders());
+            } catch (Exception inner) {
+                // ignore
+            }
+            ae.printStackTrace();
         } catch (Exception e) {
             System.out.println("Error sending email via Brevo");
             e.printStackTrace();
