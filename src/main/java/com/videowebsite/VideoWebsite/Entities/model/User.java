@@ -65,6 +65,10 @@ public class User {
     private String appliedPromoCode;
     private Long promoAppliedAt;
 
+    // Password reset fields (optional) - stored in Firestore when a reset is requested
+    private String passwordResetToken;
+    private Long passwordResetExpiry;
+
     // Constructors, Getters and Setters
     public User() {}
 
@@ -72,5 +76,10 @@ public class User {
     public void setAppliedPromoCode(String appliedPromoCode) { this.appliedPromoCode = appliedPromoCode; }
     public Long getPromoAppliedAt() { return promoAppliedAt; }
     public void setPromoAppliedAt(Long promoAppliedAt) { this.promoAppliedAt = promoAppliedAt; }
+
+    public String getPasswordResetToken() { return passwordResetToken; }
+    public void setPasswordResetToken(String passwordResetToken) { this.passwordResetToken = passwordResetToken; }
+    public Long getPasswordResetExpiry() { return passwordResetExpiry; }
+    public void setPasswordResetExpiry(Long passwordResetExpiry) { this.passwordResetExpiry = passwordResetExpiry; }
 }
 

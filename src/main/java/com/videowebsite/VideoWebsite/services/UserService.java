@@ -28,6 +28,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutionException;
 
 @Service
@@ -46,6 +48,9 @@ public class UserService {
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
     }
+
+    @Value("${frontend.url:http://localhost:4200}")
+    private String frontendUrl;
 
     public String signup(SignupRequest signupRequest) throws ExecutionException, InterruptedException {
         validateSignupRequest(signupRequest);
@@ -222,6 +227,75 @@ public class UserService {
         getFirestore().collection("users").document(user.getId()).delete().get();
 
         return ResponseEntity.ok().body("User deleted successfully");
+    }
+
+    /**
+     * Create a password reset token, save it on the user document and send a reset link email.
+     * Token expiry is set to 1 hour by default.
+     */
+    public void requestPasswordReset(String email) throws ExecutionException, InterruptedException {
+        if (!emailExists(email)) {
+            throw new UserNotFoundException("User not found with email: " + email);
+        }
+
+        String token = UUID.randomUUID().toString();
+        long expiry = System.currentTimeMillis() + 3600_000L; // 1 hour
+
+        // find user document reference
+        QuerySnapshot snapshot = getFirestore().collection("users").whereEqualTo("email", email).get().get();
+        if (snapshot.isEmpty()) throw new UserNotFoundException("User not found");
+        DocumentReference docRef = snapshot.getDocuments().get(0).getReference();
+
+        Map<String, Object> updates = new HashMap<>();
+        updates.put("passwordResetToken", token);
+        updates.put("passwordResetExpiry", expiry);
+
+        docRef.set(updates, SetOptions.merge()).get();
+
+        // Build reset link -> frontend should have a route that accepts token & email
+        String resetLink = frontendUrl + "/auth/reset-password?token=" +
+                URLEncoder.encode(token, StandardCharsets.UTF_8) +
+                "&email=" + URLEncoder.encode(email, StandardCharsets.UTF_8);
+
+        String html = "<p>Hi,</p>" +
+                "<p>We received a request to reset your password. Click the link below to reset it (valid for 1 hour):</p>" +
+                "<p><a href=\"" + resetLink + "\">Reset your password</a></p>" +
+                "<p>If you didn't request this, you can safely ignore this email.</p>";
+
+        brevoEmailService.sendEmail(email, "Reset your Skiller Classes password", html);
+    }
+
+    /**
+     * Reset a user's password using a valid reset token.
+     */
+    public void resetPassword(String token, String newPassword) throws ExecutionException, InterruptedException {
+        if (token == null || token.isBlank()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Missing token");
+        if (newPassword == null || newPassword.length() < 6) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Password must be at least 6 characters");
+
+        QuerySnapshot snapshot = getFirestore().collection("users").whereEqualTo("passwordResetToken", token).get().get();
+        if (snapshot.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid or expired token");
+
+        DocumentSnapshot doc = snapshot.getDocuments().get(0);
+        Map<String, Object> data = doc.getData();
+        if (data == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid token data");
+
+        Object expiryObj = data.get("passwordResetExpiry");
+        long expiry = 0L;
+        if (expiryObj instanceof Number) expiry = ((Number) expiryObj).longValue();
+        else if (expiryObj instanceof String) expiry = Long.parseLong((String) expiryObj);
+
+        if (System.currentTimeMillis() > expiry) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Reset token has expired");
+        }
+
+        // update password and clear token fields
+        String encoded = encoder.encode(newPassword);
+        Map<String, Object> updates = new HashMap<>();
+        updates.put("password", encoded);
+        updates.put("passwordResetToken", null);
+        updates.put("passwordResetExpiry", null);
+
+        doc.getReference().set(updates, SetOptions.merge()).get();
     }
 
     @Async

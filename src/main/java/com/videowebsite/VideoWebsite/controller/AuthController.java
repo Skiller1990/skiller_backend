@@ -65,6 +65,43 @@ public class AuthController {
         }
     }
 
+    /**
+     * Request password reset. Expects JSON { "email": "user@example.com" }
+     */
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        if (email == null || email.isBlank()) return ResponseEntity.badRequest().body(Map.of("error", "Missing email"));
+        try {
+            userService.requestPasswordReset(email);
+            return ResponseEntity.ok(Map.of("message", "Reset email sent if account exists"));
+        } catch (UserNotFoundException e) {
+            // To avoid enumerating accounts, respond 200 with same message.
+            return ResponseEntity.ok(Map.of("message", "Reset email sent if account exists"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Reset password. Expects JSON { "token": "...", "newPassword": "..." }
+     */
+    @PostMapping("/reset-password")
+    public ResponseEntity<?> resetPassword(@RequestBody Map<String, String> body) {
+        String token = body.get("token");
+        String newPassword = body.get("newPassword");
+        try {
+            userService.resetPassword(token, newPassword);
+            return ResponseEntity.ok(Map.of("message", "Password reset successful"));
+        } catch (ResponseStatusException rse) {
+            return ResponseEntity.status(rse.getStatus()).body(Map.of("error", rse.getReason()));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
+        }
+    }
+
 //    @PostMapping("/google-signup")
 //    public ResponseEntity<?> googleSignUp(@RequestBody Map<String, String> payload) throws Exception {
 //        String idToken = payload.get("idToken");
