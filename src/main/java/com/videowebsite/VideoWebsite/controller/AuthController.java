@@ -9,6 +9,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+import com.videowebsite.VideoWebsite.exception.UserNotFoundException;
 import com.videowebsite.VideoWebsite.services.UserService;
 
 import java.util.Collections;
@@ -95,7 +97,7 @@ public class AuthController {
             userService.resetPassword(token, newPassword);
             return ResponseEntity.ok(Map.of("message", "Password reset successful"));
         } catch (ResponseStatusException rse) {
-            return ResponseEntity.status(rse.getStatus()).body(Map.of("error", rse.getReason()));
+            return ResponseEntity.status(rse.getStatusCode()).body(Map.of("error", rse.getReason()));
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", e.getMessage()));
