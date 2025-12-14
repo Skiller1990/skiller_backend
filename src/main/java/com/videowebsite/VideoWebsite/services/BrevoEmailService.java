@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import sendinblue.ApiClient;
@@ -25,6 +26,9 @@ public class BrevoEmailService implements EmailService {
     private String senderEmail;
     @Value("${brevo.sender.name:Skiller Classes}")
     private String senderName;
+
+    @Autowired
+    private SesEmailService sesEmailService;
 
     public void sendEmail(String toEmail, String subject, String htmlContent) {
         try {
@@ -58,6 +62,22 @@ public class BrevoEmailService implements EmailService {
                 // ignore
             }
             ae.printStackTrace();
+            // If the API key is unauthorized or Brevo fails, attempt a fallback to SES
+            try {
+                int code = ae.getCode();
+                if (code == 401 || code == 403 || "unauthorized".equalsIgnoreCase(ae.getResponseBody())) {
+                    System.out.println("Brevo auth failed (code=" + code + "), attempting SES fallback...");
+                    try {
+                        sesEmailService.sendEmail(toEmail, subject, htmlContent);
+                        System.out.println("SES fallback succeeded for " + toEmail);
+                    } catch (Exception sesEx) {
+                        System.err.println("SES fallback also failed: " + sesEx.getMessage());
+                        sesEx.printStackTrace();
+                    }
+                }
+            } catch (Exception ignore) {
+                // ignore any issues with fallback logic
+            }
         } catch (Exception e) {
             System.out.println("Error sending email via Brevo");
             e.printStackTrace();

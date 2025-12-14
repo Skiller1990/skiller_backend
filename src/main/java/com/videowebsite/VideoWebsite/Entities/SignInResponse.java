@@ -40,11 +40,14 @@ public class SignInResponse {
         List<String> purchases;
         Map<String, Integer> coursesProgress;
 
+        // No-arg constructor to allow flexible population by services
+        public UserResponse() {}
+
         public UserResponse(String id, String userName, String email, List<String> purchases) {
-            this.id =id;
-            this.name =userName;
-            this.email =email;
-            this.purchases =purchases;
+            this.id = id;
+            this.name = userName;
+            this.email = email;
+            this.purchases = purchases;
         }
 
         public String getId() {
@@ -77,6 +80,13 @@ public class SignInResponse {
 
         public void setCoursesProgress(Map<String, Integer> coursesProgress) {
             this.coursesProgress = coursesProgress;
+        }
+
+        public List<String> getPurchases() {
+            return purchases;
+        }
+        public void setPurchases(List<String> purchases) {
+            this.purchases = purchases;
         }
     }
 }

@@ -157,7 +157,28 @@ public class UserService {
             this.findOrCreateUser(email, name, true);
 
             String token = jwtService.generateToken(email);
-            return ResponseEntity.ok(Map.of("token", token));
+
+            // Build SignInResponse with user information so the frontend can hydrate state
+            User user = findByEmail(email);
+            Map<String, Integer> videoProgressMap = new HashMap<>();
+            try {
+                videoProgressMap = getUserCourseProgress(user.getId(), user.getPurchasedCourses());
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+        SignInResponse.UserResponse userResponse = new SignInResponse.UserResponse();
+        userResponse.setId(user.getId());
+        userResponse.setName(user.getUserName());
+        userResponse.setEmail(user.getEmail());
+        userResponse.setPurchases(user.getPurchasedCourses());
+        userResponse.setCoursesProgress(videoProgressMap);
+
+            SignInResponse response = new SignInResponse();
+            response.setToken(token);
+            response.setUser(userResponse);
+
+            return ResponseEntity.ok(response);
         } else {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid ID token");
         }
