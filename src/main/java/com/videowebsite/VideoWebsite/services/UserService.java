@@ -49,7 +49,7 @@ public class UserService {
         return FirestoreClient.getFirestore();
     }
 
-    @Value("${frontend.url:http://localhost:4200}")
+    @Value("${frontend.url:http://skillerclasses.com}")
     private String frontendUrl;
 
     public String signup(SignupRequest signupRequest) throws ExecutionException, InterruptedException {
