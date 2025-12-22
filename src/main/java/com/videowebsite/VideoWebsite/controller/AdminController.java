@@ -27,7 +27,7 @@ import com.videowebsite.VideoWebsite.Entities.model.User;
 @RequestMapping("/api/admin")
 @CrossOrigin(origins = "*")
 public class AdminController {
-    
+
     private Firestore db() { return FirestoreClient.getFirestore(); }
 
     @GetMapping("/courses")
@@ -137,28 +137,6 @@ public class AdminController {
             }
             return ResponseEntity.ok().build();
         } catch (Exception e) {
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
-    @PostMapping(path = "/upload", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<Map<String, String>> uploadFile(@org.springframework.web.bind.annotation.RequestParam("file") org.springframework.web.multipart.MultipartFile file,
-                                                          jakarta.servlet.http.HttpServletRequest request) {
-        try {
-            // ensure uploads directory exists
-            String uploadsDir = System.getProperty("user.dir") + System.getProperty("file.separator") + "uploads" + System.getProperty("file.separator");
-            java.nio.file.Files.createDirectories(java.nio.file.Paths.get(uploadsDir));
-            String original = org.springframework.util.StringUtils.cleanPath(file.getOriginalFilename());
-            String filename = java.util.UUID.randomUUID().toString() + "_" + original;
-            java.nio.file.Path target = java.nio.file.Paths.get(uploadsDir).resolve(filename);
-            try (java.io.InputStream in = file.getInputStream()) {
-                java.nio.file.Files.copy(in, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
-            String baseUrl = org.springframework.web.servlet.support.ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
-            String url = baseUrl + "/uploads/" + filename;
-            return ResponseEntity.ok(java.util.Map.of("url", url, "name", original));
-        } catch (Exception e) {
-            e.printStackTrace();
             return ResponseEntity.internalServerError().build();
         }
     }

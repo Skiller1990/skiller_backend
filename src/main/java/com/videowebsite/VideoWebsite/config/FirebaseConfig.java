@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.FirebaseOptions;
+import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageOptions;
 
 import jakarta.annotation.PostConstruct;
 
@@ -31,6 +33,7 @@ public class FirebaseConfig {
     private String clientId;
     @Value("${firebase.client.x509.cert.url}")
     private String clientX509CertUrl;
+    private GoogleCredentials credentials;
 
     @PostConstruct
     public void init() throws IOException {
@@ -55,9 +58,9 @@ public class FirebaseConfig {
         credentialsMap.put("auth_provider_x509_cert_url", "https://www.googleapis.com/oauth2/v1/certs");
         credentialsMap.put("client_x509_cert_url", clientX509CertUrl);
 
-        GoogleCredentials credentials = GoogleCredentials.fromStream(
-                new ByteArrayInputStream(new ObjectMapper().writeValueAsBytes(credentialsMap))
-        );
+    GoogleCredentials credentials = GoogleCredentials.fromStream(
+        new ByteArrayInputStream(new ObjectMapper().writeValueAsBytes(credentialsMap))
+    );
 
         FirebaseOptions options = FirebaseOptions.builder()
                 .setCredentials(credentials)
@@ -66,6 +69,15 @@ public class FirebaseConfig {
 
         FirebaseApp.initializeApp(options);
 
+        // keep credentials for other beans (Storage)
+        this.credentials = credentials;
+
         System.out.println("✅ Firebase initialized from environment variables");
+    }
+
+    @org.springframework.context.annotation.Bean
+    public Storage googleStorage() {
+        if (this.credentials == null) return null;
+        return StorageOptions.newBuilder().setCredentials(this.credentials).setProjectId(projectId).build().getService();
     }
 }
