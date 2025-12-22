@@ -17,6 +17,15 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+import javax.servlet.http.HttpServletRequest;
+import org.springframework.http.MediaType;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.UUID;
 
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
@@ -93,6 +102,36 @@ public class AdminController {
             var doc = snap.getDocuments().get(0);
             db().collection("users").document(doc.getId()).delete().get();
             return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file, HttpServletRequest request) {
+        try {
+            if (file == null || file.isEmpty()) return ResponseEntity.badRequest().body(Map.of("error", "empty file"));
+            // Ensure uploads directory exists (relative to working directory)
+            File uploadsDir = new File("uploads");
+            if (!uploadsDir.exists()) uploadsDir.mkdirs();
+
+            String original = file.getOriginalFilename();
+            String ext = "";
+            if (original != null && original.contains(".")) ext = original.substring(original.lastIndexOf('.'));
+            String filename = UUID.randomUUID().toString() + ext;
+            Path out = uploadsDir.toPath().resolve(filename);
+            try {
+                Files.copy(file.getInputStream(), out, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException ioe) {
+                return ResponseEntity.internalServerError().body(Map.of("error", "save_failed"));
+            }
+
+            String scheme = request.getScheme();
+            String host = request.getServerName();
+            int port = request.getServerPort();
+            String base = scheme + "://" + host + (port == 80 || port == 443 ? "" : ":" + port);
+            String url = base + "/uploads/" + filename;
+            return ResponseEntity.ok(Map.of("url", url, "name", original != null ? original : filename));
         } catch (Exception e) {
             return ResponseEntity.internalServerError().build();
         }

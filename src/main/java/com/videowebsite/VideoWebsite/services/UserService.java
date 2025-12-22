@@ -330,11 +330,14 @@ public class UserService {
         try {
             Resource resource = resourceLoader.getResource("classpath:templates/email/welcome-email.html");
             String html = StreamUtils.copyToString(resource.getInputStream(), StandardCharsets.UTF_8);
-            html = html.replace("{{name}}", name);
+            html = html.replace("{{name}}", name == null ? "" : name);
 
             brevoEmailService.sendEmail(email, "Welcome Email", html);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to load email template", e);
+        } catch (Exception e) {
+            // Don't throw from async method — log and continue. This prevents failures in the email
+            // subsystem from affecting user signup flow.
+            System.err.println("Failed to send welcome email to " + email + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
