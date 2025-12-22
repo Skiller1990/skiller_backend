@@ -17,15 +17,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
-import javax.servlet.http.HttpServletRequest;
-import org.springframework.http.MediaType;
-import java.io.File;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.UUID;
 
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
@@ -36,7 +27,7 @@ import com.videowebsite.VideoWebsite.Entities.model.User;
 @RequestMapping("/api/admin")
 @CrossOrigin(origins = "*")
 public class AdminController {
-
+    
     private Firestore db() { return FirestoreClient.getFirestore(); }
 
     @GetMapping("/courses")
@@ -107,36 +98,6 @@ public class AdminController {
         }
     }
 
-    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<?> uploadFile(@RequestParam("file") MultipartFile file, HttpServletRequest request) {
-        try {
-            if (file == null || file.isEmpty()) return ResponseEntity.badRequest().body(Map.of("error", "empty file"));
-            // Ensure uploads directory exists (relative to working directory)
-            File uploadsDir = new File("uploads");
-            if (!uploadsDir.exists()) uploadsDir.mkdirs();
-
-            String original = file.getOriginalFilename();
-            String ext = "";
-            if (original != null && original.contains(".")) ext = original.substring(original.lastIndexOf('.'));
-            String filename = UUID.randomUUID().toString() + ext;
-            Path out = uploadsDir.toPath().resolve(filename);
-            try {
-                Files.copy(file.getInputStream(), out, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException ioe) {
-                return ResponseEntity.internalServerError().body(Map.of("error", "save_failed"));
-            }
-
-            String scheme = request.getScheme();
-            String host = request.getServerName();
-            int port = request.getServerPort();
-            String base = scheme + "://" + host + (port == 80 || port == 443 ? "" : ":" + port);
-            String url = base + "/uploads/" + filename;
-            return ResponseEntity.ok(Map.of("url", url, "name", original != null ? original : filename));
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().build();
-        }
-    }
-
     @GetMapping("/subscriptions")
     public ResponseEntity<List<Map<String,Object>>> listSubscriptions(@RequestParam(required = false) String q) {
         try {
@@ -176,6 +137,28 @@ public class AdminController {
             }
             return ResponseEntity.ok().build();
         } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @PostMapping(path = "/upload", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, String>> uploadFile(@org.springframework.web.bind.annotation.RequestParam("file") org.springframework.web.multipart.MultipartFile file,
+                                                          jakarta.servlet.http.HttpServletRequest request) {
+        try {
+            // ensure uploads directory exists
+            String uploadsDir = System.getProperty("user.dir") + System.getProperty("file.separator") + "uploads" + System.getProperty("file.separator");
+            java.nio.file.Files.createDirectories(java.nio.file.Paths.get(uploadsDir));
+            String original = org.springframework.util.StringUtils.cleanPath(file.getOriginalFilename());
+            String filename = java.util.UUID.randomUUID().toString() + "_" + original;
+            java.nio.file.Path target = java.nio.file.Paths.get(uploadsDir).resolve(filename);
+            try (java.io.InputStream in = file.getInputStream()) {
+                java.nio.file.Files.copy(in, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            String baseUrl = org.springframework.web.servlet.support.ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString();
+            String url = baseUrl + "/uploads/" + filename;
+            return ResponseEntity.ok(java.util.Map.of("url", url, "name", original));
+        } catch (Exception e) {
+            e.printStackTrace();
             return ResponseEntity.internalServerError().build();
         }
     }
