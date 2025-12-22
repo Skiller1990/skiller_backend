@@ -54,5 +54,6 @@ public class Course {
         private double durationSeconds; // optional numeric duration
         private String description;
         private String embedUrl;
+        private String attachment; // optional per-video attachment link (e.g., Google Drive URL)
     }
 }
