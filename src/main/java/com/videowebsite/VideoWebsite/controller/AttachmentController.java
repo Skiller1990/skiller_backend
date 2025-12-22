@@ -30,34 +30,15 @@ public class AttachmentController {
 
     @Value("${firebase.project.id:sajid-project}")
     private String projectId;
+    @Value("${firebase.storage.bucket:}")
+    private String storageBucket;
 
     // Upload endpoint for admin to send attachment files. Returns storagePath and a temp signedUrl.
-    @PostMapping("/admin/attachments/upload")
+    @PostMapping(path = "/admin/attachments/upload", consumes = {"multipart/form-data"})
     public ResponseEntity<?> uploadAttachment(@RequestParam("file") MultipartFile file, @RequestParam(required = false) String courseId, @RequestParam(required = false) String videoId) {
-        try {
-            if (storage == null) return ResponseEntity.internalServerError().body(Map.of("error", "Storage client not initialized"));
-            String bucket = projectId + ".appspot.com";
-            String safeCourse = (courseId == null || courseId.isBlank()) ? "_" : courseId;
-            String safeVideo = (videoId == null || videoId.isBlank()) ? "_" : videoId;
-            String objectName = String.format("attachments/%s/%s/%d_%s", safeCourse, safeVideo, System.currentTimeMillis(), file.getOriginalFilename().replaceAll("\\s+", "_"));
-
-            BlobId blobId = BlobId.of(bucket, objectName);
-            BlobInfo blobInfo = BlobInfo.newBuilder(blobId).setContentType(file.getContentType()).build();
-            storage.create(blobInfo, file.getBytes());
-
-            // Generate a temporary signed URL (7 days) to preview immediately in admin
-            URL signedUrl = storage.signUrl(blobInfo, 7, TimeUnit.DAYS, Storage.SignUrlOption.withV4Signature());
-
-            Map<String, Object> out = new HashMap<>();
-            out.put("storagePath", objectName);
-            out.put("signedUrl", signedUrl.toString());
-            out.put("contentType", file.getContentType());
-            out.put("size", file.getSize());
-            return ResponseEntity.ok(out);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
-        }
+        // Uploads are intentionally disabled. Admin UI now accepts external links (Google Drive etc.).
+        // Keep the endpoint mapped to return a clear, non-ambiguous response so callers (old clients) fail fast.
+        return ResponseEntity.status(410).body(Map.of("error", "Upload endpoint disabled. Use external links (Google Drive) in the admin UI."));
     }
 
     // Return a short-lived signed URL for a given storage path. Useful when serving downloads to authorized users.
