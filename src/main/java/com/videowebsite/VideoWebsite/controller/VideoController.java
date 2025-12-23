@@ -94,4 +94,20 @@ public class VideoController {
         return videoService.getCourseCertificate(token, courseId);
     }
 
+    // Admin endpoint: fetch any user's course progress by userId and courseId.
+    // Protect this with an X-Admin-Secret header that must match the ADMIN_SECRET env var.
+    @GetMapping("/admin/userCourseProgress/{userId}/{courseId}")
+    public ResponseEntity<?> getUserCourseProgressForAdmin(
+            @PathVariable String userId,
+            @PathVariable String courseId,
+            @RequestHeader(value = "X-Admin-Secret", required = false) String adminSecret
+    ) throws Exception {
+        String configured = System.getenv("ADMIN_SECRET");
+        if ((configured == null || configured.isBlank()) || adminSecret == null || !adminSecret.equals(configured)) {
+            return ResponseEntity.status(403).body(Map.of("message", "Forbidden"));
+        }
+
+        return videoService.getCourseProgressByUserId(userId, courseId);
+    }
+
 }

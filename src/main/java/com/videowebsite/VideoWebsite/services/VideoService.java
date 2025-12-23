@@ -366,6 +366,76 @@ public class VideoService {
         return ResponseEntity.ok(dto);
     }
 
+    /**
+     * Admin-friendly method: get course progress for any user by userId and courseId.
+     * This is identical to getUserCourseProgress but does not rely on a JWT token.
+     */
+    public ResponseEntity<CourseProgressDTO> getCourseProgressByUserId(String userId, String courseId) throws ExecutionException, InterruptedException {
+        if (userId == null || courseId == null) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // Ensure progress document exists for the user/course
+        try {
+            ensureCourseProgressExists(userId, courseId);
+        } catch (Exception e) {
+            System.out.println("ensureCourseProgressExists failed for admin lookup: " + e.getMessage());
+        }
+
+        DocumentSnapshot courseProgDoc = getFirestore().collection("userCourseProgress")
+                .document(userId + "_" + courseId).get().get();
+
+        if (!courseProgDoc.exists()) {
+            CourseProgressDTO empty = new CourseProgressDTO();
+            empty.setUserId(userId);
+            empty.setCourseId(courseId);
+            empty.setTitle("");
+            empty.setTotalProgress(0);
+            empty.setTotalPercentage(0.0);
+            empty.setCompleted(false);
+            empty.setTotalDuration(0);
+            empty.setLastWatchedVideoId("");
+            empty.setLastWatchedSeconds(0);
+            empty.setVideos(new ArrayList<>());
+            return ResponseEntity.ok(empty);
+        }
+
+        CourseProgressDTO dto = new CourseProgressDTO();
+        dto.setUserId(userId);
+        dto.setCourseId(courseId);
+        dto.setTitle(courseProgDoc.getString("title"));
+        dto.setTotalProgress(getSafeInt(courseProgDoc.get("totalProgress")));
+        dto.setTotalPercentage(getSafeDouble(courseProgDoc.get("totalPercentage")));
+        dto.setCompleted(Boolean.TRUE.equals(courseProgDoc.getBoolean("isCompleted")));
+        dto.setTotalDuration(getSafeInt(courseProgDoc.get("totalDuration")));
+        dto.setLastWatchedVideoId(courseProgDoc.getString("lastWatchedVideoId"));
+        dto.setLastWatchedSeconds(getSafeInt(courseProgDoc.get("lastWatchedSeconds")));
+
+        DocumentSnapshot courseDoc = getFirestore().collection("courses").document(courseId).get().get();
+        List<String> videoIds = extractVideoIdsFromCourseDoc(courseDoc);
+
+        List<VideoProgressDTO> videos = new ArrayList<>();
+        for (String vid : videoIds) {
+            DocumentSnapshot vidDoc = getFirestore().collection("videoMetadata").document(vid).get().get();
+            DocumentSnapshot progDoc = getFirestore().collection("userVideoProgress")
+                    .document(userId + "_" + vid).get().get();
+
+            VideoProgressDTO v = new VideoProgressDTO();
+            v.setVideoId(vid);
+            v.setTitle(vidDoc.getString("title"));
+            v.setDuration(getSafeDouble(vidDoc.get("duration")));
+            v.setProgress(progDoc.exists() ? getSafeInt(progDoc.get("progress")) : 0);
+            v.setPercentage(progDoc.exists() ? getSafeDouble(progDoc.get("percentage")) : 0.0);
+            v.setCompleted(progDoc.exists() && Boolean.TRUE.equals(progDoc.getBoolean("isCompleted")));
+            v.setLastWatchedAt(progDoc.exists() && progDoc.get("lastWatchedAt") != null
+                    ? Instant.parse(progDoc.getString("lastWatchedAt")) : null);
+            videos.add(v);
+        }
+
+        dto.setVideos(videos);
+        return ResponseEntity.ok(dto);
+    }
+
     public ResponseEntity<?> getCourseCertificate(String token, String courseId) throws ExecutionException, InterruptedException {
         String userId = jwtService.extractUserName(token.substring(7));
         String docId = userId + "_" + courseId;
