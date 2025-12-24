@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.time.Instant;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -146,12 +148,31 @@ public class AdminController {
     @GetMapping("/users/{email}/progress")
     public ResponseEntity<List<Map<String,Object>>> listUserCourseProgress(@PathVariable String email) {
         try {
-            var snap = db().collection("userCourseProgress").whereEqualTo("userId", email).get().get();
+            // Path variables may be percent-encoded (sometimes double-encoded by proxies/builders)
+            // e.g. khansajid0259%2540gmail.com -> decode twice -> khansajid0259@gmail.com
+            String decodedEmail = email;
+            for (int i = 0; i < 3; i++) {
+                String tmp = URLDecoder.decode(decodedEmail, StandardCharsets.UTF_8);
+                if (tmp.equals(decodedEmail)) break;
+                decodedEmail = tmp;
+            }
+
+            final String userEmail = decodedEmail;
+
+            var snap = db().collection("userCourseProgress").whereEqualTo("userId", userEmail).get().get();
             List<Map<String,Object>> out = new ArrayList<>();
             for (var d : snap.getDocuments()) {
                 Map<String,Object> m = d.getData();
                 if (m == null) m = new HashMap<>();
-                m.put("courseId", d.getId().replaceFirst(email + "_", ""));
+                // Safely derive courseId from document id which is stored as "userId_courseId"
+                String docId = d.getId();
+                String derivedCourseId = null;
+                if (docId != null) {
+                    String prefix = userEmail + "_";
+                    if (docId.startsWith(prefix)) derivedCourseId = docId.substring(prefix.length());
+                    else if (docId.contains("_")) derivedCourseId = docId.substring(docId.indexOf("_") + 1);
+                }
+                m.put("courseId", derivedCourseId);
                 // attach per-video progress for convenience
                 List<Map<String,Object>> videos = new ArrayList<>();
                 Object totalVideosObj = m.get("totalVideos");
@@ -200,7 +221,7 @@ public class AdminController {
                         pv.put("videoId", vid);
                         var vm = db().collection("videoMetadata").document(vid).get().get();
                         if (vm.exists()) pv.put("title", vm.getString("title"));
-                        var up = db().collection("userVideoProgress").document(email + "_" + vid).get().get();
+                        var up = db().collection("userVideoProgress").document(userEmail + "_" + vid).get().get();
                         if (up.exists()) {
                             pv.put("progress", up.get("progress"));
                             pv.put("percentage", up.get("percentage"));
