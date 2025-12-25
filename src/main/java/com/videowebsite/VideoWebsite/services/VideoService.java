@@ -413,7 +413,28 @@ public class VideoService {
             update.put("lastWatchedAt", Instant.now().toString());
             update.put("updatedAt", Instant.now().toString());
 
-            getFirestore().collection("userCourseProgress").document(userId + "_" + courseId).update(update).get();
+            DocumentReference userCourseRef = getFirestore().collection("userCourseProgress").document(userId + "_" + courseId);
+            DocumentSnapshot existingCourseProgSnap = userCourseRef.get().get();
+            if (existingCourseProgSnap.exists()) {
+                userCourseRef.update(update).get();
+            } else {
+                // Build a reasonable initial document based on course metadata and our computed aggregates
+                Map<String, Object> base = new HashMap<>();
+                base.put("userId", userId);
+                base.put("courseId", courseId);
+                base.put("title", courseDoc.getString("title") != null ? courseDoc.getString("title") : "");
+                base.put("totalVideos", videoIds.size());
+                base.put("totalProgress", totalProgress);
+                base.put("completedVideos", completedVideos);
+                base.put("totalDuration", getSafeInt(courseDoc.get("totalDuration")));
+                base.put("totalPercentage", totalPercent);
+                base.put("isCompleted", update.get("isCompleted"));
+                base.put("lastWatchedVideoId", videoId);
+                base.put("lastWatchedSeconds", update.get("lastWatchedSeconds"));
+                base.put("lastWatchedAt", update.get("lastWatchedAt"));
+                base.put("updatedAt", update.get("updatedAt"));
+                userCourseRef.set(base).get();
+            }
 
             return ResponseEntity.ok(Map.of("message", "Completion updated", "isCompleted", completed));
         } catch (Exception e) {
