@@ -269,7 +269,8 @@ public class VideoService {
             if (existingProgressDoc.exists()) {
                 existingCompletion = Boolean.TRUE.equals(existingProgressDoc.getBoolean("isCompleted"));
             }
-            boolean isCompleted = existingCompletion || percentage >= 95;
+            // treat video completed when user watched >= 90%
+            boolean isCompleted = existingCompletion || percentage >= 90;
 
             Map<String, Object> videoProgress = new HashMap<>();
             videoProgress.put("userId", userId);
