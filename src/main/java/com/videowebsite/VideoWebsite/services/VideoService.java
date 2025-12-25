@@ -329,6 +329,99 @@ public class VideoService {
         }
     }
 
+    /**
+     * Explicitly set/unset the completion flag for a user's video and update course aggregates.
+     */
+    public ResponseEntity<?> setVideoCompletion(String token, String videoId, boolean completed) throws ExecutionException, InterruptedException {
+        try {
+            if (token == null || !token.startsWith("Bearer ")) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "Missing or malformed Authorization header"));
+            }
+            String userId = jwtService.extractUserName(token.substring(7));
+            if (userId == null) return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message","Invalid token"));
+
+            DocumentSnapshot videoDoc = getFirestore().collection("videoMetadata").document(videoId).get().get();
+            if (videoDoc == null || !videoDoc.exists()) {
+                Map<String, Object> gumResponse = gumletService.getVideoById(videoId);
+                if (gumResponse == null || gumResponse.isEmpty()) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Video metadata not found"));
+                }
+                Video newVideo = extractVideo(gumResponse);
+                getFirestore().collection("videoMetadata").document(newVideo.getVideoId()).set(newVideo).get();
+                videoDoc = getFirestore().collection("videoMetadata").document(videoId).get().get();
+            }
+
+            String courseId = videoDoc.getString("courseId");
+            if (courseId == null || courseId.isBlank()) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("message", "Video metadata is missing courseId"));
+            }
+
+            // read existing progress if any
+            DocumentReference progRef = getFirestore().collection("userVideoProgress").document(userId + "_" + videoId);
+            DocumentSnapshot existingProg = progRef.get().get();
+            Map<String, Object> videoProgress = new HashMap<>();
+            int existingProgress = 0;
+            if (existingProg.exists()) {
+                existingProgress = getSafeInt(existingProg.get("progress"));
+            }
+
+            // if marking completed, set progress to duration (best-effort)
+            int duration = (int) getSafeDouble(videoDoc.get("duration"));
+            if (duration <= 0) duration = Math.max(1, existingProgress);
+
+            videoProgress.put("userId", userId);
+            videoProgress.put("videoId", videoId);
+            videoProgress.put("courseId", courseId);
+            videoProgress.put("title", videoDoc.getString("title"));
+            videoProgress.put("duration", duration);
+            videoProgress.put("progress", completed ? duration : existingProgress);
+            double percent = duration > 0 ? ((double) (completed ? duration : existingProgress) * 100.0) / duration : 0.0;
+            videoProgress.put("percentage", percent);
+            videoProgress.put("isCompleted", completed);
+            videoProgress.put("lastWatchedAt", Instant.now().toString());
+
+            progRef.set(videoProgress).get();
+
+            // Recompute course-level aggregates similar to saveVideoProgress
+            DocumentSnapshot courseDoc = getFirestore().collection("courses").document(courseId).get().get();
+            List<String> videoIds = extractVideoIdsFromCourseDoc(courseDoc);
+            if (videoIds == null) videoIds = new ArrayList<>();
+
+            int totalProgress = 0, completedVideos = 0;
+            for (String vid : videoIds) {
+                DocumentSnapshot prog = getFirestore().collection("userVideoProgress").document(userId + "_" + vid).get().get();
+                if (prog.exists()) {
+                    totalProgress += getSafeInt(prog.get("progress"));
+                    if (Boolean.TRUE.equals(prog.getBoolean("isCompleted"))) completedVideos++;
+                }
+            }
+
+            int totalDuration = getSafeInt(courseDoc.get("totalDuration"));
+            if (totalDuration <= 0) totalDuration = 1;
+            double totalPercent = (totalProgress * 100.0) / totalDuration;
+
+            Map<String, Object> update = new HashMap<>();
+            update.put("totalProgress", totalProgress);
+            update.put("completedVideos", completedVideos);
+            update.put("totalPercentage", totalPercent);
+            boolean existingCourseCompletion = false;
+            DocumentSnapshot existingCourseProg = getFirestore().collection("userCourseProgress").document(userId + "_" + courseId).get().get();
+            if (existingCourseProg.exists()) existingCourseCompletion = Boolean.TRUE.equals(existingCourseProg.getBoolean("isCompleted"));
+            update.put("isCompleted", existingCourseCompletion || totalPercent >= 99);
+            update.put("lastWatchedVideoId", videoId);
+            update.put("lastWatchedSeconds", completed ? duration : existingProgress);
+            update.put("lastWatchedAt", Instant.now().toString());
+            update.put("updatedAt", Instant.now().toString());
+
+            getFirestore().collection("userCourseProgress").document(userId + "_" + courseId).update(update).get();
+
+            return ResponseEntity.ok(Map.of("message", "Completion updated", "isCompleted", completed));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("message", "Error updating completion", "error", e.getMessage()));
+        }
+    }
+
     public ResponseEntity<CourseProgressDTO> getUserCourseProgress(String token, String courseId) throws ExecutionException, InterruptedException {
         String userId = jwtService.extractUserName(token.substring(7));
         // Ensure the user's course progress document exists (create lazily if needed)

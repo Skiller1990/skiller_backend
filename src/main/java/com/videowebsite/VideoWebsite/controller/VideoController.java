@@ -78,6 +78,14 @@ public class VideoController {
         return ResponseEntity.ok().body(Map.of("message","Progress saved successfully"));
     }
 
+    // POST: Mark a video as completed/uncompleted for the user
+    @PostMapping("/markComplete/{videoId}")
+    public ResponseEntity<?> markComplete(@PathVariable String videoId,
+                                          @RequestHeader("Authorization") String token,
+                                          @RequestParam(defaultValue = "true") boolean completed) throws Exception {
+        return videoService.setVideoCompletion(token, videoId, completed);
+    }
+
     // GET: Get user video progress
     @GetMapping("/getProgress/{courseId}")
     public ResponseEntity<?> getCourseProgress(@PathVariable String courseId,
