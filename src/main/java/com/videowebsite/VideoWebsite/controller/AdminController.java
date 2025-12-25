@@ -122,6 +122,71 @@ public class AdminController {
         }
     }
 
+    @GetMapping("/course-progress")
+    public ResponseEntity<?> getUserCourseProgressForAdmin(@RequestParam String email, @RequestParam String courseId) {
+        try {
+            if (email == null || email.isBlank() || courseId == null || courseId.isBlank()) return ResponseEntity.badRequest().body(Map.of("message","email and courseId required"));
+            // Use email as user identifier (same as JwtService.extractUserName uses email)
+            String userId = email;
+
+            var courseDocSnap = db().collection("courses").document(courseId).get().get();
+            if (!courseDocSnap.exists()) return ResponseEntity.status(404).body(Map.of("message","Course not found"));
+
+            // Extract video IDs from course document (supports videoIds list or modulesStructure nested)
+            List<String> videoIds = new ArrayList<>();
+            Object legacy = courseDocSnap.get("videoIds");
+            if (legacy instanceof List) {
+                try {
+                    List<Object> list = (List<Object>) legacy;
+                    for (Object o : list) if (o != null) videoIds.add(String.valueOf(o));
+                } catch (Exception ignored) {}
+            }
+            if (videoIds.isEmpty()) {
+                Object modulesObj = courseDocSnap.get("modulesStructure");
+                if (modulesObj instanceof List) {
+                    try {
+                        List<Map<String,Object>> modules = (List<Map<String,Object>>) modulesObj;
+                        for (Map<String,Object> module : modules) {
+                            Object subsObj = module.get("subcategories");
+                            if (subsObj instanceof List) {
+                                List<Map<String,Object>> subs = (List<Map<String,Object>>) subsObj;
+                                for (Map<String,Object> sub : subs) {
+                                    Object vidsObj = sub.get("videos");
+                                    if (vidsObj instanceof List) {
+                                        List<Map<String,Object>> vids = (List<Map<String,Object>>) vidsObj;
+                                        for (Map<String,Object> v : vids) {
+                                            Object idObj = v.get("id");
+                                            if (idObj != null) videoIds.add(String.valueOf(idObj));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+
+            int total = videoIds.size();
+            int completed = 0;
+            for (String vid : videoIds) {
+                var progSnap = db().collection("userVideoProgress").document(userId + "_" + vid).get().get();
+                if (progSnap.exists() && Boolean.TRUE.equals(progSnap.getBoolean("isCompleted"))) completed++;
+            }
+
+            double pct = total == 0 ? 0.0 : ((double) completed * 100.0) / total;
+            Map<String,Object> out = new HashMap<>();
+            out.put("email", email);
+            out.put("courseId", courseId);
+            out.put("totalVideos", total);
+            out.put("completedVideos", completed);
+            out.put("percentage", pct);
+            return ResponseEntity.ok(out);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().body(Map.of("message","Error computing progress","error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/subscriptions/remove")
     public ResponseEntity<?> removeAccess(@RequestBody Map<String,String> body) {
         try {
