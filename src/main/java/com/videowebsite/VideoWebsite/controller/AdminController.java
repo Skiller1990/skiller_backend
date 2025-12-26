@@ -242,6 +242,31 @@ public class AdminController {
                 return ResponseEntity.badRequest().body(Map.of("message", "'to' and 'html' are required"));
             }
 
+            // Save certificate record to Firestore before sending and reserve an ID
+            String certId = UUID.randomUUID().toString();
+            Map<String,Object> certDoc = new HashMap<>();
+            certDoc.put("id", certId);
+            certDoc.put("to", to);
+            certDoc.put("subject", subject);
+            certDoc.put("fileName", fileName);
+            certDoc.put("createdAt", java.time.Instant.now().toString());
+            // optional fields from request
+            if (body.containsKey("courseId")) certDoc.put("courseId", body.get("courseId"));
+            if (body.containsKey("studentName")) certDoc.put("studentName", body.get("studentName"));
+            certDoc.put("status", "pending");
+            db().collection("certificates").document(certId).set(certDoc).get();
+
+            // Replace placeholder in HTML with actual certificate ID so it appears on the certificate
+            if (html != null) {
+                html = html.replace("%%CERT_ID%%", certId);
+                // store a small preview/snippet of rendered HTML for debugging/audit
+                try {
+                    String preview = html.length() > 2000 ? html.substring(0, 2000) : html;
+                    certDoc.put("sentHtmlPreview", preview);
+                    db().collection("certificates").document(certId).update(certDoc).get();
+                } catch (Exception ignore) {}
+            }
+
             // Optionally convert HTML to PDF. First convert HTML to well-formed XHTML using jsoup
             String attachmentBase64 = null;
             if (attachPdf) {
@@ -295,24 +320,6 @@ public class AdminController {
             String apiKey = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
             if (apiKey == null || apiKey.isBlank()) {
                 return ResponseEntity.status(500).body(Map.of("message", "Brevo API key not configured"));
-            }
-            // Save certificate record to Firestore before sending and reserve an ID
-            String certId = UUID.randomUUID().toString();
-            Map<String,Object> certDoc = new HashMap<>();
-            certDoc.put("id", certId);
-            certDoc.put("to", to);
-            certDoc.put("subject", subject);
-            certDoc.put("fileName", fileName);
-            certDoc.put("createdAt", java.time.Instant.now().toString());
-            // optional fields from request
-            if (body.containsKey("courseId")) certDoc.put("courseId", body.get("courseId"));
-            if (body.containsKey("studentName")) certDoc.put("studentName", body.get("studentName"));
-            certDoc.put("status", "pending");
-            db().collection("certificates").document(certId).set(certDoc).get();
-
-            // Replace placeholder in HTML with actual certificate ID so it appears on the certificate
-            if (html != null) {
-                html = html.replace("%%CERT_ID%%", certId);
             }
 
             RestTemplate rt = new RestTemplate();
