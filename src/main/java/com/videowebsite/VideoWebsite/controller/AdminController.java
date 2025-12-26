@@ -18,6 +18,8 @@ import org.springframework.web.client.RestTemplate;
 import java.io.ByteArrayOutputStream;
 import java.util.Base64;
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document.OutputSettings;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -240,16 +242,29 @@ public class AdminController {
                 return ResponseEntity.badRequest().body(Map.of("message", "'to' and 'html' are required"));
             }
 
-            // Optionally convert HTML to PDF
+            // Optionally convert HTML to PDF. First convert HTML to well-formed XHTML using jsoup
             String attachmentBase64 = null;
             if (attachPdf) {
-                ByteArrayOutputStream os = new ByteArrayOutputStream();
-                PdfRendererBuilder builder = new PdfRendererBuilder();
-                builder.withHtmlContent(html, null);
-                builder.toStream(os);
-                builder.run();
-                byte[] pdfBytes = os.toByteArray();
-                attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+                // Clean and convert to XHTML
+                try {
+                    OutputSettings settings = new OutputSettings();
+                    settings.syntax(OutputSettings.Syntax.xml);
+                    settings.escapeMode(org.jsoup.nodes.Entities.EscapeMode.xhtml);
+                    settings.charset(java.nio.charset.StandardCharsets.UTF_8);
+                    String xhtml = Jsoup.parse(html).outputSettings(settings).outerHtml();
+
+                    ByteArrayOutputStream os = new ByteArrayOutputStream();
+                    PdfRendererBuilder builder = new PdfRendererBuilder();
+                    builder.withHtmlContent(xhtml, null);
+                    builder.toStream(os);
+                    builder.run();
+                    byte[] pdfBytes = os.toByteArray();
+                    attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+                } catch (Exception pdfEx) {
+                    // fallback: log and continue sending HTML-only email
+                    pdfEx.printStackTrace();
+                    System.err.println("PDF conversion failed, will send HTML-only email: " + pdfEx.getMessage());
+                }
             }
 
             // Build request payload for Brevo API v3

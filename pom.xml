@@ -143,6 +143,13 @@
 			<version>1.0.10</version>
 		</dependency>
 
+		<!-- Jsoup for HTML parsing/cleaning to XHTML before PDF conversion -->
+		<dependency>
+			<groupId>org.jsoup</groupId>
+			<artifactId>jsoup</artifactId>
+			<version>1.16.1</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>
