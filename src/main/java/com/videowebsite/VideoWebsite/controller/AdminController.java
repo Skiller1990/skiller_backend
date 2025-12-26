@@ -296,6 +296,24 @@ public class AdminController {
             if (apiKey == null || apiKey.isBlank()) {
                 return ResponseEntity.status(500).body(Map.of("message", "Brevo API key not configured"));
             }
+            // Save certificate record to Firestore before sending and reserve an ID
+            String certId = UUID.randomUUID().toString();
+            Map<String,Object> certDoc = new HashMap<>();
+            certDoc.put("id", certId);
+            certDoc.put("to", to);
+            certDoc.put("subject", subject);
+            certDoc.put("fileName", fileName);
+            certDoc.put("createdAt", java.time.Instant.now().toString());
+            // optional fields from request
+            if (body.containsKey("courseId")) certDoc.put("courseId", body.get("courseId"));
+            if (body.containsKey("studentName")) certDoc.put("studentName", body.get("studentName"));
+            certDoc.put("status", "pending");
+            db().collection("certificates").document(certId).set(certDoc).get();
+
+            // Replace placeholder in HTML with actual certificate ID so it appears on the certificate
+            if (html != null) {
+                html = html.replace("%%CERT_ID%%", certId);
+            }
 
             RestTemplate rt = new RestTemplate();
             HttpHeaders headers = new HttpHeaders();
@@ -305,10 +323,30 @@ public class AdminController {
             HttpEntity<Map<String,Object>> req = new HttpEntity<>(sendPayload, headers);
             String url = "https://api.brevo.com/v3/smtp/email";
             var resp = rt.postForEntity(url, req, String.class);
-            return ResponseEntity.status(resp.getStatusCode()).body(Map.of("message", "Certificate email sent", "brevoResp", resp.getBody()));
+
+            // update firestore record with result
+            certDoc.put("status", resp.getStatusCode().is2xxSuccessful() ? "sent" : "failed");
+            certDoc.put("brevoResponse", resp.getBody());
+            db().collection("certificates").document(certId).update(certDoc).get();
+
+            return ResponseEntity.status(resp.getStatusCode()).body(Map.of("message", "Certificate email sent", "certificateId", certId, "brevoResp", resp.getBody()));
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.internalServerError().body(Map.of("message", "Failed to send certificate", "error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/certificates/{id}")
+    public ResponseEntity<?> getCertificateById(@PathVariable String id) {
+        try {
+            var docSnap = db().collection("certificates").document(id).get().get();
+            if (!docSnap.exists()) return ResponseEntity.status(404).body(Map.of("message", "Certificate not found"));
+            Map<String,Object> data = docSnap.getData();
+            if (data == null) data = new HashMap<>();
+            return ResponseEntity.ok(data);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().body(Map.of("message", "Failed to fetch certificate", "error", e.getMessage()));
         }
     }
 }
