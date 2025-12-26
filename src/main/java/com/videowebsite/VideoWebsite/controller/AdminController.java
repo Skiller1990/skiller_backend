@@ -8,6 +8,16 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.env.Environment;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.web.client.RestTemplate;
+
+import java.io.ByteArrayOutputStream;
+import java.util.Base64;
+import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +39,9 @@ import com.videowebsite.VideoWebsite.Entities.model.User;
 public class AdminController {
 
     private Firestore db() { return FirestoreClient.getFirestore(); }
+
+    @Autowired
+    private Environment env;
 
     @GetMapping("/courses")
     public ResponseEntity<List<Map<String, Object>>> listCourses() {
@@ -203,6 +216,84 @@ public class AdminController {
             return ResponseEntity.ok().build();
         } catch (Exception e) {
             return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Accepts certificate payload and sends an email via Brevo (Sendinblue).
+     * Expected request body: { to: string, subject?: string, html: string, fileName?: string, attachPdf?: boolean }
+     */
+    @PostMapping("/send-certificate")
+    public ResponseEntity<?> sendCertificate(@RequestBody Map<String, Object> body) {
+        try {
+            String to = (String) body.get("to");
+            String subject = (String) body.getOrDefault("subject", "Your Certificate");
+            String html = (String) body.get("html");
+            String fileName = (String) body.getOrDefault("fileName", "certificate.pdf");
+            boolean attachPdf = true;
+            if (body.containsKey("attachPdf")) {
+                Object v = body.get("attachPdf");
+                attachPdf = Boolean.TRUE.equals(v) || (v instanceof String && Boolean.parseBoolean((String)v));
+            }
+
+            if (to == null || to.isBlank() || html == null || html.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("message", "'to' and 'html' are required"));
+            }
+
+            // Optionally convert HTML to PDF
+            String attachmentBase64 = null;
+            if (attachPdf) {
+                ByteArrayOutputStream os = new ByteArrayOutputStream();
+                PdfRendererBuilder builder = new PdfRendererBuilder();
+                builder.withHtmlContent(html, null);
+                builder.toStream(os);
+                builder.run();
+                byte[] pdfBytes = os.toByteArray();
+                attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+            }
+
+            // Build request payload for Brevo API v3
+            Map<String, Object> sendPayload = new HashMap<>();
+            Map<String, String> sender = new HashMap<>();
+            sender.put("name", env.getProperty("brevo.sender.name", "Skiller Classes"));
+            sender.put("email", env.getProperty("brevo.sender.email", "support@skillerclasses.com"));
+            sendPayload.put("sender", sender);
+
+            List<Map<String,String>> toList = new ArrayList<>();
+            Map<String,String> toMap = new HashMap<>();
+            toMap.put("email", to);
+            toList.add(toMap);
+            sendPayload.put("to", toList);
+            sendPayload.put("subject", subject);
+            sendPayload.put("htmlContent", html);
+
+            if (attachmentBase64 != null) {
+                List<Map<String,String>> attachments = new ArrayList<>();
+                Map<String,String> a = new HashMap<>();
+                a.put("content", attachmentBase64);
+                a.put("name", fileName.endsWith(".pdf") ? fileName : fileName + ".pdf");
+                a.put("contentType", "application/pdf");
+                attachments.add(a);
+                sendPayload.put("attachment", attachments);
+            }
+
+            String apiKey = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
+            if (apiKey == null || apiKey.isBlank()) {
+                return ResponseEntity.status(500).body(Map.of("message", "Brevo API key not configured"));
+            }
+
+            RestTemplate rt = new RestTemplate();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("api-key", apiKey);
+
+            HttpEntity<Map<String,Object>> req = new HttpEntity<>(sendPayload, headers);
+            String url = "https://api.brevo.com/v3/smtp/email";
+            var resp = rt.postForEntity(url, req, String.class);
+            return ResponseEntity.status(resp.getStatusCode()).body(Map.of("message", "Certificate email sent", "brevoResp", resp.getBody()));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().body(Map.of("message", "Failed to send certificate", "error", e.getMessage()));
         }
     }
 }

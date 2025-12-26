@@ -136,6 +136,13 @@
 			<version>2.20.82</version>
 		</dependency>
 
+		<!-- OpenHTMLToPDF for HTML -> PDF conversion -->
+		<dependency>
+			<groupId>com.openhtmltopdf</groupId>
+			<artifactId>openhtmltopdf-pdfbox</artifactId>
+			<version>1.0.10</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>
