@@ -62,6 +62,21 @@ public class AdminController {
         }
     }
 
+    /**
+     * Generate a short certificate id with prefix SKC- and 8 uppercase alphanumeric chars.
+     */
+    private String generateCertificateId() {
+        final String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // exclude ambiguous characters
+        final int len = 8;
+        StringBuilder sb = new StringBuilder();
+        sb.append("SKC-");
+        java.util.concurrent.ThreadLocalRandom rnd = java.util.concurrent.ThreadLocalRandom.current();
+        for (int i = 0; i < len; i++) {
+            sb.append(chars.charAt(rnd.nextInt(chars.length())));
+        }
+        return sb.toString();
+    }
+
     @PostMapping("/courses")
     public ResponseEntity<?> saveCourse(@RequestBody Map<String, Object> body) {
         try {
@@ -259,6 +274,12 @@ public class AdminController {
             // Replace placeholder in HTML with actual certificate ID so it appears on the certificate
             if (html != null) {
                 html = html.replace("%%CERT_ID%%", certId);
+                // Attempt to inline Google Fonts referenced by the HTML and add a print-safe CSS fallback
+                try {
+                    html = inlineFontsAndPrintCss(html);
+                } catch (Exception ignore) {
+                    // non-fatal - continue with original html
+                }
                 // store a small preview/snippet of rendered HTML for debugging/audit
                 try {
                     String preview = html.length() > 2000 ? html.substring(0, 2000) : html;
@@ -360,15 +381,66 @@ public class AdminController {
     /**
      * Generate a short certificate id with prefix SKC- and 8 uppercase alphanumeric chars.
      */
-    private String generateCertificateId() {
-        final String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // exclude ambiguous characters
-        final int len = 8;
-        StringBuilder sb = new StringBuilder();
-        sb.append("SKC-");
-        java.util.concurrent.ThreadLocalRandom rnd = java.util.concurrent.ThreadLocalRandom.current();
-        for (int i = 0; i < len; i++) {
-            sb.append(chars.charAt(rnd.nextInt(chars.length())));
+    private String inlineFontsAndPrintCss(String html) {
+        try {
+            if (html == null || !html.contains("fonts.googleapis.com")) return html;
+
+            RestTemplate rt = new RestTemplate();
+            org.jsoup.nodes.Document doc = Jsoup.parse(html);
+            var links = doc.select("link[href*='fonts.googleapis.com']");
+            StringBuilder inlinedCss = new StringBuilder();
+
+            for (org.jsoup.nodes.Element link : links) {
+                String cssUrl = link.attr("href");
+                try {
+                    String cssText = rt.getForObject(cssUrl, String.class);
+                    if (cssText == null) continue;
+
+                    // Replace font URLs in the CSS with data: URIs
+                    java.util.regex.Pattern urlPat = java.util.regex.Pattern.compile("url\\(([^)]+)\\)", java.util.regex.Pattern.CASE_INSENSITIVE);
+                    java.util.regex.Matcher um = urlPat.matcher(cssText);
+                    StringBuffer sb = new StringBuffer();
+                    while (um.find()) {
+                        String raw = um.group(1).trim();
+                        String fontUrl = raw.replace("\"", "").replace("'", "");
+                        try {
+                            var resp = rt.getForEntity(fontUrl, byte[].class);
+                            byte[] bytes = resp.getBody();
+                            String contentType = "font/woff2";
+                            if (fontUrl.endsWith(".woff2")) contentType = "font/woff2";
+                            else if (fontUrl.endsWith(".woff")) contentType = "font/woff";
+                            else if (fontUrl.endsWith(".ttf")) contentType = "font/ttf";
+                            String b64 = bytes == null ? "" : Base64.getEncoder().encodeToString(bytes);
+                            String dataUri = "url('data:" + contentType + ";base64," + b64 + "')";
+                            um.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(dataUri));
+                        } catch (Exception fe) {
+                            um.appendReplacement(sb, "url('" + fontUrl + "')");
+                        }
+                    }
+                    um.appendTail(sb);
+                    inlinedCss.append(sb.toString()).append("\n");
+                } catch (Exception e) {
+                    // ignore
+                }
+                // remove the link element from the doc
+                link.remove();
+            }
+
+            // Build print-safe CSS overrides
+            String printCss = "<style>\n" +
+                    "@media print { body { background: #ffffff !important; } .page-wrap{padding:0 !important;} .cert-card{box-shadow:none !important; background: #ffffff !important; } .cert-card:before{display:none !important;} }\n" +
+                    "body { font-family: Inter, Arial, Helvetica, sans-serif; }\n" +
+                    "</style>\n";
+
+            String finalCss = inlinedCss.length() > 0 ? "<style>" + inlinedCss.toString() + "</style>\n" : "";
+
+            // Insert the generated CSS into head
+            org.jsoup.nodes.Element head = doc.head();
+            head.append(finalCss + printCss);
+
+            return doc.outerHtml();
+        } catch (Exception e) {
+            return html;
         }
-        return sb.toString();
     }
 }
