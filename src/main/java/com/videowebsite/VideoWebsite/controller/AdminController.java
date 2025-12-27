@@ -243,7 +243,7 @@ public class AdminController {
             }
 
             // Save certificate record to Firestore before sending and reserve an ID
-            String certId = UUID.randomUUID().toString();
+            String certId = generateCertificateId();
             Map<String,Object> certDoc = new HashMap<>();
             certDoc.put("id", certId);
             certDoc.put("to", to);
@@ -355,5 +355,20 @@ public class AdminController {
             e.printStackTrace();
             return ResponseEntity.internalServerError().body(Map.of("message", "Failed to fetch certificate", "error", e.getMessage()));
         }
+    }
+
+    /**
+     * Generate a short certificate id with prefix SKC- and 8 uppercase alphanumeric chars.
+     */
+    private String generateCertificateId() {
+        final String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // exclude ambiguous characters
+        final int len = 8;
+        StringBuilder sb = new StringBuilder();
+        sb.append("SKC-");
+        java.util.concurrent.ThreadLocalRandom rnd = java.util.concurrent.ThreadLocalRandom.current();
+        for (int i = 0; i < len; i++) {
+            sb.append(chars.charAt(rnd.nextInt(chars.length())));
+        }
+        return sb.toString();
     }
 }
