@@ -18,21 +18,6 @@ import org.springframework.web.client.RestTemplate;
 import java.io.ByteArrayOutputStream;
 import java.util.Base64;
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
-import com.lowagie.text.Document;
-import com.lowagie.text.PageSize;
-import com.lowagie.text.Paragraph;
-import com.lowagie.text.Font;
-import com.lowagie.text.FontFactory;
-import com.lowagie.text.Image;
-import com.lowagie.text.Rectangle;
-import com.lowagie.text.Element;
-import com.lowagie.text.pdf.PdfWriter;
-import com.lowagie.text.pdf.PdfContentByte;
-import com.microsoft.playwright.Browser;
-import com.microsoft.playwright.BrowserContext;
-import com.microsoft.playwright.BrowserType;
-import com.microsoft.playwright.Page;
-import com.microsoft.playwright.Playwright;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document.OutputSettings;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -282,49 +267,28 @@ public class AdminController {
                 } catch (Exception ignore) {}
             }
 
-            // Optionally generate a programmatic PDF (OpenPDF) for pixel-perfect certificate output
+            // Optionally convert HTML to PDF. First convert HTML to well-formed XHTML using jsoup
             String attachmentBase64 = null;
             if (attachPdf) {
+                // Clean and convert to XHTML
                 try {
-                    // prefer structured inputs: studentName and courseId, but fall back to parsing HTML
-                    String studentName = (String) body.getOrDefault("studentName", to);
-                    String courseTitle = null;
-                    if (body.containsKey("courseId")) {
-                        String cId = String.valueOf(body.get("courseId"));
-                        var courseSnap = db().collection("courses").document(cId).get().get();
-                        if (courseSnap.exists()) courseTitle = courseSnap.getString("title");
-                    }
-                    if (courseTitle == null || courseTitle.isBlank()) courseTitle = "Course";
+                    OutputSettings settings = new OutputSettings();
+                    settings.syntax(OutputSettings.Syntax.xml);
+                    settings.escapeMode(org.jsoup.nodes.Entities.EscapeMode.xhtml);
+                    settings.charset(java.nio.charset.StandardCharsets.UTF_8);
+                    String xhtml = Jsoup.parse(html).outputSettings(settings).outerHtml();
 
-                    // Try to extract logo and signature data URLs from provided HTML
-                    String logoSrc = extractFirstDataUrl(html, "logo");
-                    String sigSrc = extractFirstDataUrl(html, "Signature");
-
-                    byte[] pdfBytes = generateCertificatePdf(studentName, courseTitle, java.util.Date.from(java.time.Instant.now()), logoSrc, sigSrc, certId);
-                    if (pdfBytes != null && pdfBytes.length > 0) {
-                        attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
-                    }
-                } catch (Exception genEx) {
-                    genEx.printStackTrace();
-                    System.err.println("OpenPDF generation failed, falling back to previous HTML render: " + genEx.getMessage());
-                    // Fallback: attempt previous HTML-based pipeline
-                    try {
-                        OutputSettings settings = new OutputSettings();
-                        settings.syntax(OutputSettings.Syntax.xml);
-                        settings.escapeMode(org.jsoup.nodes.Entities.EscapeMode.xhtml);
-                        settings.charset(java.nio.charset.StandardCharsets.UTF_8);
-                        String xhtml = Jsoup.parse(html).outputSettings(settings).outerHtml();
-
-                        ByteArrayOutputStream os = new ByteArrayOutputStream();
-                        PdfRendererBuilder builder = new PdfRendererBuilder();
-                        builder.withHtmlContent(xhtml, null);
-                        builder.toStream(os);
-                        builder.run();
-                        byte[] pdfBytes = os.toByteArray();
-                        attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
-                    } catch (Exception pdfEx) {
-                        pdfEx.printStackTrace();
-                    }
+                    ByteArrayOutputStream os = new ByteArrayOutputStream();
+                    PdfRendererBuilder builder = new PdfRendererBuilder();
+                    builder.withHtmlContent(xhtml, null);
+                    builder.toStream(os);
+                    builder.run();
+                    byte[] pdfBytes = os.toByteArray();
+                    attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+                } catch (Exception pdfEx) {
+                    // fallback: log and continue sending HTML-only email
+                    pdfEx.printStackTrace();
+                    System.err.println("PDF conversion failed, will send HTML-only email: " + pdfEx.getMessage());
                 }
             }
 
@@ -394,31 +358,6 @@ public class AdminController {
     }
 
     /**
-     * Render provided HTML to PDF and return as a downloadable attachment.
-     * Accepts JSON body: { html: string, fileName?: string }
-     */
-    @PostMapping("/render-pdf")
-    public ResponseEntity<?> renderPdf(@RequestBody Map<String, Object> body) {
-        try {
-            String html = (String) body.get("html");
-            String fileName = (String) body.getOrDefault("fileName", "certificate.pdf");
-            if (html == null || html.isBlank()) return ResponseEntity.badRequest().body(Map.of("message", "'html' is required"));
-
-            // Prefer Playwright rendering for fidelity
-            byte[] pdf = convertHtmlToPdfWithPlaywright(html);
-            if (pdf == null || pdf.length == 0) return ResponseEntity.internalServerError().body(Map.of("message", "PDF rendering failed"));
-
-            return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
-                    .contentType(MediaType.APPLICATION_PDF)
-                    .body(pdf);
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.internalServerError().body(Map.of("message", "Failed to render PDF", "error", e.getMessage()));
-        }
-    }
-
-    /**
      * Generate a short certificate id with prefix SKC- and 8 uppercase alphanumeric chars.
      */
     private String generateCertificateId() {
@@ -431,159 +370,5 @@ public class AdminController {
             sb.append(chars.charAt(rnd.nextInt(chars.length())));
         }
         return sb.toString();
-    }
-
-    // Helper: extract first data: URL from HTML that contains keyword (e.g., 'logo' or 'Signature')
-    private String extractFirstDataUrl(String html, String keyword) {
-        if (html == null) return null;
-        try {
-            java.util.regex.Pattern p = java.util.regex.Pattern.compile("src=[\"'](data:[^\"']*" + keyword + "[^\"']*)[\"']", java.util.regex.Pattern.CASE_INSENSITIVE);
-            java.util.regex.Matcher m = p.matcher(html);
-            if (m.find()) return m.group(1);
-            // fallback: any data:src
-            p = java.util.regex.Pattern.compile("src=[\"'](data:[^\"']+)[\"']", java.util.regex.Pattern.CASE_INSENSITIVE);
-            m = p.matcher(html);
-            if (m.find()) return m.group(1);
-        } catch (Exception e) {}
-        return null;
-    }
-
-    private byte[] decodeDataUrl(String dataUrl) {
-        if (dataUrl == null) return null;
-        try {
-            int idx = dataUrl.indexOf(";base64,");
-            if (idx > 0) {
-                String b64 = dataUrl.substring(idx + 8);
-                return Base64.getDecoder().decode(b64);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
-    /**
-     * Generate a PDF certificate using OpenPDF. This draws a centered certificate suitable for A4 landscape.
-     */
-    private byte[] generateCertificatePdf(String studentName, String courseTitle, java.util.Date completionDate, String logoDataUrl, String sigDataUrl, String certId) {
-        try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            Document document = new Document(PageSize.A4.rotate());
-            PdfWriter writer = PdfWriter.getInstance(document, baos);
-            document.open();
-
-            // Background: light card in center
-            PdfContentByte canvas = writer.getDirectContentUnder();
-            Rectangle page = document.getPageSize();
-            // white background
-            canvas.setColorFill(new java.awt.Color(255,255,255));
-            canvas.rectangle(page.getLeft(), page.getBottom(), page.getWidth(), page.getHeight());
-            canvas.fill();
-
-            // Add logo if available
-            try {
-                byte[] logoBytes = decodeDataUrl(logoDataUrl);
-                if (logoBytes != null) {
-                    Image logo = Image.getInstance(logoBytes);
-                    logo.scaleToFit(140, 60);
-                    logo.setAlignment(Image.ALIGN_CENTER);
-                    document.add(logo);
-                }
-            } catch (Exception e) { /* ignore logo failures */ }
-
-            // Title
-            Font titleFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 34);
-            Paragraph title = new Paragraph("Certificate of Completion", titleFont);
-            title.setAlignment(Element.ALIGN_CENTER);
-            title.setSpacingBefore(10f);
-            document.add(title);
-
-            Font subFont = FontFactory.getFont(FontFactory.HELVETICA, 14);
-            Paragraph presented = new Paragraph("Presented to", subFont);
-            presented.setAlignment(Element.ALIGN_CENTER);
-            presented.setSpacingBefore(12f);
-            document.add(presented);
-
-            Font nameFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 28);
-            Paragraph nameP = new Paragraph(studentName != null ? studentName : " ", nameFont);
-            nameP.setAlignment(Element.ALIGN_CENTER);
-            nameP.setSpacingBefore(6f);
-            document.add(nameP);
-
-            Font courseFont = FontFactory.getFont(FontFactory.HELVETICA, 16);
-            Paragraph courseP = new Paragraph("has successfully completed the course\n" + (courseTitle != null ? courseTitle : ""), courseFont);
-            courseP.setAlignment(Element.ALIGN_CENTER);
-            courseP.setSpacingBefore(8f);
-            document.add(courseP);
-
-            // Add metadata row: issuer and date
-            Font metaFont = FontFactory.getFont(FontFactory.HELVETICA, 12);
-            Paragraph meta = new Paragraph("Issued by Skiller Classes" + "    \u00A0\u00A0\u00A0\u00A0 Date: " + new java.text.SimpleDateFormat("dd MMM yyyy").format(completionDate), metaFont);
-            meta.setAlignment(Element.ALIGN_CENTER);
-            meta.setSpacingBefore(20f);
-            document.add(meta);
-
-            // Signature on bottom-right
-            try {
-                byte[] sigBytes = decodeDataUrl(sigDataUrl);
-                if (sigBytes != null) {
-                    Image sig = Image.getInstance(sigBytes);
-                    sig.scaleToFit(160, 60);
-                    sig.setAbsolutePosition(page.getRight() - 200, page.getBottom() + 70);
-                    document.add(sig);
-                }
-            } catch (Exception e) { /* ignore */ }
-
-            // Signature name
-            Paragraph sigName = new Paragraph("CEO", FontFactory.getFont(FontFactory.HELVETICA_BOLD, 12));
-            sigName.setAlignment(Element.ALIGN_RIGHT);
-            sigName.setSpacingBefore(10f);
-            document.add(sigName);
-
-            // Certificate ID at bottom-left
-            Paragraph cid = new Paragraph("Certificate ID: " + certId, FontFactory.getFont(FontFactory.HELVETICA, 10));
-            cid.setAlignment(Element.ALIGN_LEFT);
-            cid.setSpacingBefore(30f);
-            document.add(cid);
-
-            document.close();
-            return baos.toByteArray();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
-    }
-
-    /**
-     * Convert raw HTML to PDF using Playwright (Chromium). This produces Chromium-quality output
-     * and is useful when server-side HTML-to-PDF libraries can't reproduce the browser preview.
-     *
-     * Note: Playwright requires the Playwright Java dependency and installed browsers.
-     */
-    private byte[] convertHtmlToPdfWithPlaywright(String html) {
-        try (Playwright playwright = Playwright.create()) {
-            Browser browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true).setArgs(java.util.Arrays.asList("--no-sandbox", "--disable-setuid-sandbox")));
-            BrowserContext context = browser.newContext(new Browser.NewContextOptions().setViewportSize(1400, 900));
-            Page page = context.newPage();
-        // Load HTML and wait for network idle to give remote fonts/images a chance to load (if used)
-            page.setContent(html);
-            // wait for network idle state so fonts/images have time to load
-            page.waitForLoadState(com.microsoft.playwright.options.LoadState.NETWORKIDLE);
-        // Emulate screen so screen CSS is used instead of print CSS (use options.Media enum)
-        page.emulateMedia(new Page.EmulateMediaOptions().setMedia(com.microsoft.playwright.options.Media.SCREEN));
-
-        Page.PdfOptions pdfOptions = new Page.PdfOptions()
-            .setFormat("A4")
-            .setLandscape(true)
-            .setPrintBackground(true);
-
-        byte[] pdf = page.pdf(pdfOptions);
-            // Clean up
-            context.close();
-            browser.close();
-            return pdf;
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
     }
 }
