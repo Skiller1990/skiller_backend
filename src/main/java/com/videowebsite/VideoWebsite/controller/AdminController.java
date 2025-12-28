@@ -361,14 +361,10 @@ public class AdminController {
      * Generate a short certificate id with prefix SKC- and 8 uppercase alphanumeric chars.
      */
     private String generateCertificateId() {
-        final String chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // exclude ambiguous characters
-        final int len = 8;
-        StringBuilder sb = new StringBuilder();
-        sb.append("SKC-");
-        java.util.concurrent.ThreadLocalRandom rnd = java.util.concurrent.ThreadLocalRandom.current();
-        for (int i = 0; i < len; i++) {
-            sb.append(chars.charAt(rnd.nextInt(chars.length())));
-        }
-        return sb.toString();
+        // Generate an 8-digit numeric certificate id (10000000..99999999)
+        int min = 10_000_000;
+        int max = 99_999_999;
+        int num = java.util.concurrent.ThreadLocalRandom.current().nextInt(min, max + 1);
+        return String.valueOf(num);
     }
 }
