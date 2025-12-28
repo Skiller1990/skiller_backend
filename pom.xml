@@ -150,6 +150,13 @@
 			<version>1.16.1</version>
 		</dependency>
 
+		<!-- Playwright for Java (Chromium-based rendering) - used as a fallback for high-fidelity PDF rendering -->
+		<dependency>
+			<groupId>com.microsoft.playwright</groupId>
+			<artifactId>playwright</artifactId>
+			<version>1.50.0</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>
