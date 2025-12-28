@@ -374,6 +374,31 @@ public class AdminController {
     }
 
     /**
+     * Render provided HTML to PDF and return as a downloadable attachment.
+     * Accepts JSON body: { html: string, fileName?: string }
+     */
+    @PostMapping("/render-pdf")
+    public ResponseEntity<?> renderPdf(@RequestBody Map<String, Object> body) {
+        try {
+            String html = (String) body.get("html");
+            String fileName = (String) body.getOrDefault("fileName", "certificate.pdf");
+            if (html == null || html.isBlank()) return ResponseEntity.badRequest().body(Map.of("message", "'html' is required"));
+
+            // Prefer Playwright rendering for fidelity
+            byte[] pdf = convertHtmlToPdfWithPlaywright(html);
+            if (pdf == null || pdf.length == 0) return ResponseEntity.internalServerError().body(Map.of("message", "PDF rendering failed"));
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
+                    .contentType(MediaType.APPLICATION_PDF)
+                    .body(pdf);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.internalServerError().body(Map.of("message", "Failed to render PDF", "error", e.getMessage()));
+        }
+    }
+
+    /**
      * Generate a short certificate id with prefix SKC- and 8 uppercase alphanumeric chars.
      */
     private String generateCertificateId() {
