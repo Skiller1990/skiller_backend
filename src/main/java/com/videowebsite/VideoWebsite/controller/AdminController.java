@@ -292,8 +292,12 @@ public class AdminController {
             int attempts = 0;
 
             ResponseEntity<Map> lastStatusResp = null;
-            while (!"success".equals(status) && attempts < 10) {
-                Thread.sleep(2000);
+            int maxAttempts = 30; // allow more time for PDFMonkey to render
+            long sleepMillis = 2000L;
+            long maxSleep = 8000L;
+
+            while (!"success".equalsIgnoreCase(status) && attempts < maxAttempts) {
+                Thread.sleep(sleepMillis);
                 attempts++;
 
                 ResponseEntity<Map> statusResp = rt.exchange(
@@ -304,14 +308,32 @@ public class AdminController {
                 );
                 lastStatusResp = statusResp;
 
-                if (statusResp == null || statusResp.getBody() == null) break;
+                if (statusResp == null || statusResp.getBody() == null) {
+                    // increase backoff and continue polling
+                    sleepMillis = Math.min(maxSleep, sleepMillis * 2);
+                    continue;
+                }
                 Map d = (Map) statusResp.getBody().get("document");
-                if (d == null) break;
+                if (d == null) {
+                    sleepMillis = Math.min(maxSleep, sleepMillis * 2);
+                    continue;
+                }
                 status = String.valueOf(d.get("status"));
+                // if not success, increase backoff before next attempt
+                if (!"success".equalsIgnoreCase(status)) sleepMillis = Math.min(maxSleep, sleepMillis * 2);
             }
 
-            if (!"success".equals(status)) {
+            if (!"success".equalsIgnoreCase(status)) {
                 Object lastBody = lastStatusResp == null ? null : lastStatusResp.getBody();
+                // persist debug info into Firestore to help troubleshooting
+                try {
+                    Map<String,Object> update = new HashMap<>();
+                    update.put("pdfmonkeyCreateResponse", createBody);
+                    update.put("pdfmonkeyLastStatusResponse", lastBody);
+                    update.put("pdfmonkeyAttempts", attempts);
+                    db().collection("certificates").document(certificateId).update(update).get();
+                } catch (Exception ignore) {}
+
                 return ResponseEntity.status(500)
                     .body(Map.of("message", "PDF generation failed", "attempts", attempts, "lastStatusResponse", lastBody));
             }
