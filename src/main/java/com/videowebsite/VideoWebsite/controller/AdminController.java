@@ -244,14 +244,15 @@ public class AdminController {
             payload.put("certificateId", certificateId);
 
             Map<String, Object> document = new HashMap<>();
-String templateId = System.getenv("PDFMONKEY_TEMPLATE_ID");
-
-if (templateId == null || templateId.isBlank()) {
-    return ResponseEntity.status(500)
-        .body(Map.of("message", "PDFMonkey template ID not configured"));
-}
-
-document.put("document_template_id", templateId);
+            // Read template id from several possible env/property names to be tolerant
+            String templateId = System.getenv("PDFMONKEY_TEMPLATE_ID");
+            if (templateId == null || templateId.isBlank()) templateId = env.getProperty("pdfmonkey.template.id");
+            if (templateId == null || templateId.isBlank()) templateId = env.getProperty("pdfmon.template.id");
+            if (templateId == null || templateId.isBlank()) {
+                return ResponseEntity.status(500)
+                    .body(Map.of("message", "PDFMonkey template ID not configured", "hint", "set PDFMONKEY_TEMPLATE_ID or pdfmonkey.template.id"));
+            }
+            document.put("document_template_id", templateId);
             document.put("payload", payload);
 
             HttpHeaders pdfHeaders = new HttpHeaders();
@@ -259,9 +260,10 @@ document.put("document_template_id", templateId);
             String pdfmonkeyKey = System.getenv("PDFMONKEY_API_KEY");
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
                 // fallback to Spring property (if set via application.properties or platform mapping)
+                pdfmonkeyKey = env.getProperty("pdfmonkey.api.key");
             }
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
-                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured (set PDFMONKEY_API_KEY)"));
+                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured (set PDFMONKEY_API_KEY)", "hint", "set PDFMONKEY_API_KEY or pdfmonkey.api.key"));
             }
             pdfHeaders.setBearerAuth(pdfmonkeyKey);
             pdfHeaders.setContentType(MediaType.APPLICATION_JSON);
@@ -274,17 +276,22 @@ document.put("document_template_id", templateId);
                 Map.class
             );
 
-            if (createResp == null || createResp.getBody() == null || createResp.getBody().get("document") == null) {
-                return ResponseEntity.status(500).body(Map.of("message", "Failed to create PDF document"));
+            if (createResp == null) {
+                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey create document request returned null response"));
+            }
+            Object createBody = createResp.getBody();
+            if (createBody == null || ((createBody instanceof Map) && ((Map)createBody).get("document") == null)) {
+                return ResponseEntity.status(500).body(Map.of("message", "Failed to create PDF document", "pdfmonkeyResponse", createBody));
             }
 
-            Map doc = (Map) createResp.getBody().get("document");
+            Map doc = (Map) ((Map)createBody).get("document");
             String documentId = String.valueOf(doc.get("id"));
 
             /* -------------------- 2. POLL PDFMONKEY (RETRY) -------------------- */
             String status = "pending";
             int attempts = 0;
 
+            ResponseEntity<Map> lastStatusResp = null;
             while (!"success".equals(status) && attempts < 10) {
                 Thread.sleep(2000);
                 attempts++;
@@ -295,6 +302,7 @@ document.put("document_template_id", templateId);
                     new HttpEntity<>(pdfHeaders),
                     Map.class
                 );
+                lastStatusResp = statusResp;
 
                 if (statusResp == null || statusResp.getBody() == null) break;
                 Map d = (Map) statusResp.getBody().get("document");
@@ -303,8 +311,9 @@ document.put("document_template_id", templateId);
             }
 
             if (!"success".equals(status)) {
+                Object lastBody = lastStatusResp == null ? null : lastStatusResp.getBody();
                 return ResponseEntity.status(500)
-                    .body(Map.of("message", "PDF generation failed"));
+                    .body(Map.of("message", "PDF generation failed", "attempts", attempts, "lastStatusResponse", lastBody));
             }
 
             /* -------------------- 3. DOWNLOAD PDF -------------------- */
