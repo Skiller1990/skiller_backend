@@ -1,22 +1,20 @@
 package com.videowebsite.VideoWebsite.controller;
 
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.web.client.RestTemplate;
-
-import java.util.Base64;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestTemplate;
 
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
@@ -245,7 +244,14 @@ public class AdminController {
             payload.put("certificateId", certificateId);
 
             Map<String, Object> document = new HashMap<>();
-            document.put("document_template_id", env.getProperty("pdfmonkey.template.id"));
+String templateId = System.getenv("PDFMONKEY_TEMPLATE_ID");
+
+if (templateId == null || templateId.isBlank()) {
+    return ResponseEntity.status(500)
+        .body(Map.of("message", "PDFMonkey template ID not configured"));
+}
+
+document.put("document_template_id", templateId);
             document.put("payload", payload);
 
             HttpHeaders pdfHeaders = new HttpHeaders();
@@ -253,7 +259,6 @@ public class AdminController {
             String pdfmonkeyKey = System.getenv("PDFMONKEY_API_KEY");
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
                 // fallback to Spring property (if set via application.properties or platform mapping)
-                pdfmonkeyKey = env.getProperty("pdfmonkey.api.key");
             }
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
                 return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured (set PDFMONKEY_API_KEY)"));
