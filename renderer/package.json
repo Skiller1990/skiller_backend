@@ -1,0 +1,9 @@
+{
+  "name": "certificate-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Small Puppeteer script to render certificate HTML to PDF",
+  "dependencies": {
+    "puppeteer": "^21.3.8"
+  }
+}

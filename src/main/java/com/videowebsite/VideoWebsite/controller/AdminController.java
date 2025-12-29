@@ -17,7 +17,17 @@ import org.springframework.web.client.RestTemplate;
 
 import java.io.ByteArrayOutputStream;
 import java.util.Base64;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.io.File;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document.OutputSettings;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -272,18 +282,32 @@ public class AdminController {
             if (attachPdf) {
                 // Clean and convert to XHTML
                 try {
+                    // Embed Google Fonts (if any) as data: URIs so PDF renderer uses same fonts as browser
+                    html = embedGoogleFonts(html);
+
                     OutputSettings settings = new OutputSettings();
                     settings.syntax(OutputSettings.Syntax.xml);
                     settings.escapeMode(org.jsoup.nodes.Entities.EscapeMode.xhtml);
                     settings.charset(java.nio.charset.StandardCharsets.UTF_8);
                     String xhtml = Jsoup.parse(html).outputSettings(settings).outerHtml();
 
-                    ByteArrayOutputStream os = new ByteArrayOutputStream();
-                    PdfRendererBuilder builder = new PdfRendererBuilder();
-                    builder.withHtmlContent(xhtml, null);
-                    builder.toStream(os);
-                    builder.run();
-                    byte[] pdfBytes = os.toByteArray();
+                    // Try using Puppeteer-based renderer for pixel-perfect output
+                    byte[] pdfBytes = null;
+                    try {
+                        pdfBytes = runPuppeteerPdf(xhtml);
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+
+                    // Fallback to openhtmltopdf if Puppeteer isn't available or fails
+                    if (pdfBytes == null) {
+                        ByteArrayOutputStream os = new ByteArrayOutputStream();
+                        PdfRendererBuilder builder = new PdfRendererBuilder();
+                        builder.withHtmlContent(xhtml, null);
+                        builder.toStream(os);
+                        builder.run();
+                        pdfBytes = os.toByteArray();
+                    }
                     attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
                 } catch (Exception pdfEx) {
                     // fallback: log and continue sending HTML-only email
@@ -366,5 +390,93 @@ public class AdminController {
         int max = 99_999_999;
         int num = java.util.concurrent.ThreadLocalRandom.current().nextInt(min, max + 1);
         return String.valueOf(num);
+    }
+
+    /**
+     * Fetch Google Fonts CSS referenced in the HTML and inline fonts as data: URIs.
+     * This helps PDF renderers (openhtmltopdf) use the same fonts as the browser preview.
+     */
+    private String embedGoogleFonts(String html) {
+        if (html == null) return null;
+        try {
+            org.jsoup.nodes.Document doc = Jsoup.parse(html);
+            Elements links = doc.select("link[href]");
+            for (Element l : links) {
+                String href = l.attr("href");
+                if (href != null && href.contains("fonts.googleapis.com")) {
+                    RestTemplate rt = new RestTemplate();
+                    String css = rt.getForObject(href, String.class);
+                    if (css == null) continue;
+
+                    Pattern p = Pattern.compile("url\\(([^)]+)\\)");
+                    Matcher m = p.matcher(css);
+                    StringBuffer sb = new StringBuffer();
+                    while (m.find()) {
+                        String fontUrl = m.group(1).trim();
+                        // remove surrounding quotes if present
+                        fontUrl = fontUrl.replaceAll("^['\"]|['\"]$", "");
+                        if (!fontUrl.startsWith("http")) {
+                            m.appendReplacement(sb, m.group(0));
+                            continue;
+                        }
+                        try {
+                            byte[] fontBytes = rt.getForObject(fontUrl, byte[].class);
+                            String mime = fontUrl.endsWith(".woff2") ? "font/woff2" : fontUrl.endsWith(".woff") ? "font/woff" : "application/octet-stream";
+                            String base64 = Base64.getEncoder().encodeToString(fontBytes);
+                            String dataUrl = "url('data:" + mime + ";base64," + base64 + "')";
+                            m.appendReplacement(sb, Matcher.quoteReplacement(dataUrl));
+                        } catch (Exception fe) {
+                            // if fetching the font fails, keep the original url
+                            m.appendReplacement(sb, m.group(0));
+                        }
+                    }
+                    m.appendTail(sb);
+
+                    Element style = doc.head().appendElement("style");
+                    style.attr("type", "text/css");
+                    style.appendText(sb.toString());
+                    l.remove();
+                }
+            }
+            return doc.outerHtml();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return html;
+        }
+    }
+
+    /**
+     * Run the Node Puppeteer script to render the supplied HTML to PDF and return the PDF bytes.
+     * Returns null if the renderer isn't available or fails, allowing the caller to fallback.
+     */
+    private byte[] runPuppeteerPdf(String html) throws Exception {
+        if (html == null) return null;
+        Path tmpHtml = Files.createTempFile("cert-", ".html");
+        try {
+            Files.writeString(tmpHtml, html, StandardCharsets.UTF_8);
+            // script location relative to project root
+            String script = "renderer/render-pdf.js";
+            ProcessBuilder pb = new ProcessBuilder("node", script, tmpHtml.toAbsolutePath().toString());
+            pb.directory(new File(System.getProperty("user.dir")));
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    out.append(line).append('\n');
+                }
+            }
+            int exit = p.waitFor();
+            if (exit != 0) {
+                System.err.println("Puppeteer renderer failed (exit=" + exit + "):\n" + out.toString());
+                return null;
+            }
+            String base64 = out.toString().trim();
+            if (base64.isEmpty()) return null;
+            return Base64.getDecoder().decode(base64);
+        } finally {
+            try { Files.deleteIfExists(tmpHtml); } catch (Exception ignore) {}
+        }
     }
 }
