@@ -236,176 +236,232 @@ public class AdminController {
 
             String certificateId = generateCertificateId();
 
-            /* -------------------- 1. PDFMonkey PAYLOAD -------------------- */
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("name", studentName);
-            payload.put("course", courseTitle);
-            payload.put("date", date);
-            payload.put("certificateId", certificateId);
-
-            Map<String, Object> document = new HashMap<>();
-            // Read template id from several possible env/property names to be tolerant
-            String templateId = System.getenv("PDFMONKEY_TEMPLATE_ID");
-            if (templateId == null || templateId.isBlank()) templateId = env.getProperty("pdfmonkey.template.id");
-            if (templateId == null || templateId.isBlank()) templateId = env.getProperty("pdfmon.template.id");
-            if (templateId == null || templateId.isBlank()) {
-                return ResponseEntity.status(500)
-                    .body(Map.of("message", "PDFMonkey template ID not configured", "hint", "set PDFMONKEY_TEMPLATE_ID or pdfmonkey.template.id"));
-            }
-            document.put("document_template_id", templateId);
-            document.put("payload", payload);
-
-            HttpHeaders pdfHeaders = new HttpHeaders();
-            // Prefer a single canonical environment variable: PDFMONKEY_API_KEY
-            String pdfmonkeyKey = System.getenv("PDFMONKEY_API_KEY");
-            if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
-                // fallback to Spring property (if set via application.properties or platform mapping)
-                pdfmonkeyKey = env.getProperty("pdfmonkey.api.key");
-            }
-            if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
-                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured (set PDFMONKEY_API_KEY)", "hint", "set PDFMONKEY_API_KEY or pdfmonkey.api.key"));
-            }
-            pdfHeaders.setBearerAuth(pdfmonkeyKey);
-            pdfHeaders.setContentType(MediaType.APPLICATION_JSON);
-
-            RestTemplate rt = new RestTemplate();
-
-            ResponseEntity<Map> createResp = rt.postForEntity(
-                "https://api.pdfmonkey.io/api/v1/documents",
-                new HttpEntity<>(Map.of("document", document), pdfHeaders),
-                Map.class
-            );
-
-            if (createResp == null) {
-                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey create document request returned null response"));
-            }
-            Object createBody = createResp.getBody();
-            if (createBody == null || ((createBody instanceof Map) && ((Map)createBody).get("document") == null)) {
-                return ResponseEntity.status(500).body(Map.of("message", "Failed to create PDF document", "pdfmonkeyResponse", createBody));
-            }
-
-            Map doc = (Map) ((Map)createBody).get("document");
-            String documentId = String.valueOf(doc.get("id"));
-
-            /* -------------------- 2. POLL PDFMONKEY (RETRY) -------------------- */
-            String status = "pending";
-            int attempts = 0;
-
-            ResponseEntity<Map> lastStatusResp = null;
-            int maxAttempts = 30; // allow more time for PDFMonkey to render
-            long sleepMillis = 2000L;
-            long maxSleep = 8000L;
-
-            while (!"success".equalsIgnoreCase(status) && attempts < maxAttempts) {
-                Thread.sleep(sleepMillis);
-                attempts++;
-
-                ResponseEntity<Map> statusResp = rt.exchange(
-                    "https://api.pdfmonkey.io/api/v1/documents/" + documentId,
-                    HttpMethod.GET,
-                    new HttpEntity<>(pdfHeaders),
-                    Map.class
-                );
-                lastStatusResp = statusResp;
-
-                if (statusResp == null || statusResp.getBody() == null) {
-                    // increase backoff and continue polling
-                    sleepMillis = Math.min(maxSleep, sleepMillis * 2);
-                    continue;
-                }
-                Map d = (Map) statusResp.getBody().get("document");
-                if (d == null) {
-                    sleepMillis = Math.min(maxSleep, sleepMillis * 2);
-                    continue;
-                }
-                status = String.valueOf(d.get("status"));
-                // if not success, increase backoff before next attempt
-                if (!"success".equalsIgnoreCase(status)) sleepMillis = Math.min(maxSleep, sleepMillis * 2);
-            }
-
-            if (!"success".equalsIgnoreCase(status)) {
-                Object lastBody = lastStatusResp == null ? null : lastStatusResp.getBody();
-                // persist debug info into Firestore to help troubleshooting
-                try {
-                    Map<String,Object> update = new HashMap<>();
-                    update.put("pdfmonkeyCreateResponse", createBody);
-                    update.put("pdfmonkeyLastStatusResponse", lastBody);
-                    update.put("pdfmonkeyAttempts", attempts);
-                    db().collection("certificates").document(certificateId).update(update).get();
-                } catch (Exception ignore) {}
-
-                return ResponseEntity.status(500)
-                    .body(Map.of("message", "PDF generation failed", "attempts", attempts, "lastStatusResponse", lastBody));
-            }
-
-            /* -------------------- 3. DOWNLOAD PDF -------------------- */
-            ResponseEntity<byte[]> pdfResp = rt.exchange(
-                "https://api.pdfmonkey.io/api/v1/documents/" + documentId + "/download",
-                HttpMethod.GET,
-                new HttpEntity<>(pdfHeaders),
-                byte[].class
-            );
-
-            byte[] pdfBytes = pdfResp == null ? null : pdfResp.getBody();
-            if (pdfBytes == null) return ResponseEntity.status(500).body(Map.of("message", "Failed to download PDF"));
-            String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
-
-            String pdfUrl = "https://api.pdfmonkey.io/api/v1/documents/" + documentId + "/download";
-
-            /* -------------------- 4. STORE IN FIRESTORE -------------------- */
+            // Create an initial certificate document with status "processing" so the frontend
+            // can poll for updates without waiting for the long-running PDF generation.
             Map<String, Object> certDoc = new HashMap<>();
             certDoc.put("certificateId", certificateId);
             certDoc.put("studentName", studentName);
             certDoc.put("courseTitle", courseTitle);
             certDoc.put("email", to);
-            certDoc.put("pdfUrl", pdfUrl);
-            certDoc.put("status", "generated");
+            certDoc.put("status", "processing");
             certDoc.put("createdAt", java.time.Instant.now().toString());
 
             db().collection("certificates").document(certificateId).set(certDoc).get();
 
-            /* -------------------- 5. SEND EMAIL (BREVO) -------------------- */
-            Map<String, Object> attachment = new HashMap<>();
-            attachment.put("content", pdfBase64);
-            attachment.put("name", "certificate.pdf");
+            // Create the PDFMonkey document synchronously so we can surface the preview_url
+            // immediately to the caller. The longer work (poll/download/email) continues
+            // in the background using the returned PDFMonkey document id.
+            try {
+                // Build payload and headers (same validation as in the background thread)
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("name", studentName);
+                payload.put("course", courseTitle);
+                payload.put("date", date);
+                payload.put("certificateId", certificateId);
 
-            Map<String, Object> emailPayload = new HashMap<>();
-            emailPayload.put("subject", "Your Certificate of Completion");
-            emailPayload.put("htmlContent",
-                "<p>Congratulations <b>" + studentName +
-                "</b>!<br/>Your certificate is attached.</p>");
+                Map<String, Object> document = new HashMap<>();
+                String templateId = System.getenv("PDFMONKEY_TEMPLATE_ID");
+                if (templateId == null || templateId.isBlank()) templateId = env.getProperty("pdfmonkey.template.id");
+                if (templateId == null || templateId.isBlank()) templateId = env.getProperty("pdfmon.template.id");
+                if (templateId == null || templateId.isBlank()) {
+                    db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", "PDFMonkey template ID not configured")).get();
+                    return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey template ID not configured"));
+                }
+                document.put("document_template_id", templateId);
+                document.put("payload", payload);
 
-            emailPayload.put("to", List.of(Map.of("email", to)));
-            emailPayload.put("sender", Map.of(
-                "email", env.getProperty("brevo.sender.email"),
-                "name", env.getProperty("brevo.sender.name")
-            ));
-            emailPayload.put("attachment", List.of(attachment));
+                HttpHeaders pdfHeaders = new HttpHeaders();
+                String pdfmonkeyKey = System.getenv("PDFMONKEY_API_KEY");
+                if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) pdfmonkeyKey = env.getProperty("pdfmonkey.api.key");
+                if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
+                    db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", "PDFMonkey API key not configured")).get();
+                    return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured"));
+                }
+                pdfHeaders.setBearerAuth(pdfmonkeyKey);
+                pdfHeaders.setContentType(MediaType.APPLICATION_JSON);
 
-            HttpHeaders brevoHeaders = new HttpHeaders();
-            brevoHeaders.setContentType(MediaType.APPLICATION_JSON);
-            String brevoKey = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
-            if (brevoKey == null || brevoKey.isBlank()) {
-                return ResponseEntity.status(500).body(Map.of("message", "Brevo API key not configured"));
+                RestTemplate rt = new RestTemplate();
+                ResponseEntity<Map> createResp = rt.postForEntity(
+                    "https://api.pdfmonkey.io/api/v1/documents",
+                    new HttpEntity<>(Map.of("document", document), pdfHeaders),
+                    Map.class
+                );
+
+                Object createBody = createResp == null ? null : createResp.getBody();
+                if (createBody == null || ((createBody instanceof Map) && ((Map)createBody).get("document") == null)) {
+                    db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "pdfmonkeyCreateResponse", createBody)).get();
+                    return ResponseEntity.status(500).body(Map.of("message", "Failed to create PDF document", "pdfmonkeyResponse", createBody));
+                }
+
+                Map createdDoc = (Map) ((Map)createBody).get("document");
+                String documentId = String.valueOf(createdDoc.get("id"));
+                String previewUrl = createdDoc.get("preview_url") == null ? null : String.valueOf(createdDoc.get("preview_url"));
+
+                // Update the Firestore certificate record with the preview URL and pdfmon document id
+                Map<String,Object> initialUpdate = new HashMap<>();
+                if (previewUrl != null) initialUpdate.put("previewUrl", previewUrl);
+                initialUpdate.put("pdfmonDocumentId", documentId);
+                initialUpdate.put("pdfmonCreateResponse", createBody);
+                db().collection("certificates").document(certificateId).update(initialUpdate).get();
+
+                // If preview URL is available, fire off a quick background email containing the preview link
+                if (previewUrl != null) {
+                    final String previewForEmail = previewUrl;
+                    new Thread(() -> {
+                        try {
+                            // prepare quick preview email (no attachment) and send asynchronously
+                            Map<String, Object> emailPayloadPreview = new HashMap<>();
+                            emailPayloadPreview.put("subject", "Your Certificate (preview)");
+                            String html = "<p>Hi " + studentName + 
+                                ",</p><p>Your certificate preview is available <a href=\"" + previewForEmail + "\">here</a>. We will email the final PDF shortly.</p>";
+                            emailPayloadPreview.put("htmlContent", html);
+                            emailPayloadPreview.put("to", List.of(Map.of("email", to)));
+                            emailPayloadPreview.put("sender", Map.of(
+                                "email", env.getProperty("brevo.sender.email"),
+                                "name", env.getProperty("brevo.sender.name")
+                            ));
+
+                            HttpHeaders brevoHeadersPreview = new HttpHeaders();
+                            brevoHeadersPreview.setContentType(MediaType.APPLICATION_JSON);
+                            String brevoKeyPreview = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
+                            if (brevoKeyPreview == null || brevoKeyPreview.isBlank()) {
+                                // persist note but don't block
+                                try { db().collection("certificates").document(certificateId).update(Map.of("previewEmailStatus", "no_brevo_key")).get(); } catch (Exception ignore) {}
+                                return;
+                            }
+                            brevoHeadersPreview.set("api-key", brevoKeyPreview);
+                            try {
+                                RestTemplate rtPreview = new RestTemplate();
+                                rtPreview.postForEntity(
+                                    "https://api.brevo.com/v3/smtp/email",
+                                    new HttpEntity<>(emailPayloadPreview, brevoHeadersPreview),
+                                    String.class
+                                );
+                                try { db().collection("certificates").document(certificateId).update(Map.of("previewEmailStatus", "sent", "previewEmailedAt", java.time.Instant.now().toString())).get(); } catch (Exception ignore) {}
+                            } catch (Exception e) {
+                                try { db().collection("certificates").document(certificateId).update(Map.of("previewEmailStatus", "failed", "previewEmailError", e.getMessage())).get(); } catch (Exception ignore) {}
+                            }
+                        } catch (Exception ignored) {}
+                    }).start();
+                }
+
+                // Start background work to poll/download/send using the created document id
+                final String pdfmonDocumentIdFinal = documentId;
+                final HttpHeaders pdfHeadersFinal = pdfHeaders;
+                final Object createBodyFinal = createBody;
+
+                new Thread(() -> {
+                    try {
+                        // POLL PDFMONKEY (RETRY) and continue with the existing workflow
+                        String status = "pending";
+                        int attempts = 0;
+                        ResponseEntity<Map> lastStatusResp = null;
+                        int maxAttempts = 30;
+                        long sleepMillis = 2000L;
+                        long maxSleep = 8000L;
+                        RestTemplate rt2 = new RestTemplate();
+
+                        while (!"success".equalsIgnoreCase(status) && attempts < maxAttempts) {
+                            try { Thread.sleep(sleepMillis); } catch (InterruptedException ignored) {}
+                            attempts++;
+
+                            ResponseEntity<Map> statusResp = rt2.exchange(
+                                "https://api.pdfmonkey.io/api/v1/documents/" + pdfmonDocumentIdFinal,
+                                HttpMethod.GET,
+                                new HttpEntity<>(pdfHeadersFinal),
+                                Map.class
+                            );
+                            lastStatusResp = statusResp;
+                            if (statusResp == null || statusResp.getBody() == null) { sleepMillis = Math.min(maxSleep, sleepMillis * 2); continue; }
+                            Map d = (Map) statusResp.getBody().get("document");
+                            if (d == null) { sleepMillis = Math.min(maxSleep, sleepMillis * 2); continue; }
+                            status = String.valueOf(d.get("status"));
+                            if (!"success".equalsIgnoreCase(status)) sleepMillis = Math.min(maxSleep, sleepMillis * 2);
+                        }
+
+                        if (!"success".equalsIgnoreCase(status)) {
+                            Object lastBody = lastStatusResp == null ? null : lastStatusResp.getBody();
+                            Map<String,Object> update = new HashMap<>();
+                            update.put("status", "failed");
+                            update.put("pdfmonkeyCreateResponse", createBodyFinal);
+                            update.put("pdfmonkeyLastStatusResponse", lastBody);
+                            update.put("pdfmonkeyAttempts", attempts);
+                            db().collection("certificates").document(certificateId).update(update).get();
+                            return;
+                        }
+
+                        // DOWNLOAD PDF
+                        ResponseEntity<byte[]> pdfResp = rt2.exchange(
+                            "https://api.pdfmonkey.io/api/v1/documents/" + pdfmonDocumentIdFinal + "/download",
+                            HttpMethod.GET,
+                            new HttpEntity<>(pdfHeadersFinal),
+                            byte[].class
+                        );
+                        byte[] pdfBytes = pdfResp == null ? null : pdfResp.getBody();
+                        if (pdfBytes == null) { db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", "Failed to download PDF")).get(); return; }
+                        String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+                        String pdfUrl = "https://api.pdfmonkey.io/api/v1/documents/" + pdfmonDocumentIdFinal + "/download";
+
+                        // Update Firestore record
+                        Map<String,Object> update = new HashMap<>();
+                        update.put("pdfUrl", pdfUrl);
+                        update.put("status", "generated");
+                        update.put("generatedAt", java.time.Instant.now().toString());
+                        db().collection("certificates").document(certificateId).update(update).get();
+
+                        // SEND EMAIL (BREVO)
+                        Map<String, Object> attachment = new HashMap<>();
+                        attachment.put("content", pdfBase64);
+                        attachment.put("name", "certificate.pdf");
+
+                        Map<String, Object> emailPayload = new HashMap<>();
+                        emailPayload.put("subject", "Your Certificate of Completion");
+                        emailPayload.put("htmlContent",
+                            "<p>Congratulations <b>" + studentName +
+                            "</b>!<br/>Your certificate is attached.</p>");
+
+                        emailPayload.put("to", List.of(Map.of("email", to)));
+                        emailPayload.put("sender", Map.of(
+                            "email", env.getProperty("brevo.sender.email"),
+                            "name", env.getProperty("brevo.sender.name")
+                        ));
+                        emailPayload.put("attachment", List.of(attachment));
+
+                        HttpHeaders brevoHeaders = new HttpHeaders();
+                        brevoHeaders.setContentType(MediaType.APPLICATION_JSON);
+                        String brevoKey = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
+                        if (brevoKey == null || brevoKey.isBlank()) { db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", "Brevo API key not configured")).get(); return; }
+                        brevoHeaders.set("api-key", brevoKey);
+
+                        try {
+                            rt2.postForEntity(
+                                "https://api.brevo.com/v3/smtp/email",
+                                new HttpEntity<>(emailPayload, brevoHeaders),
+                                String.class
+                            );
+                        } catch (Exception e) {
+                            db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", "Failed to send email", "emailError", e.getMessage())).get();
+                            return;
+                        }
+
+                        db().collection("certificates").document(certificateId).update(Map.of("status", "sent", "sentAt", java.time.Instant.now().toString())).get();
+
+                    } catch (Exception e) {
+                        try { db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", e.getMessage())).get(); } catch (Exception ignore) {}
+                    }
+                }).start();
+
+                // Return accepted with certificateId and previewUrl (if available)
+                Map<String,Object> resp = new HashMap<>();
+                resp.put("message", "Processing");
+                resp.put("certificateId", certificateId);
+                if (previewUrl != null) resp.put("previewUrl", previewUrl);
+                return ResponseEntity.accepted().body(resp);
+
+            } catch (Exception inner) {
+                try { db().collection("certificates").document(certificateId).update(Map.of("status", "failed", "error", inner.getMessage())).get(); } catch (Exception ignore) {}
+                return ResponseEntity.status(500).body(Map.of("message", "Failed to initiate PDF generation", "error", inner.getMessage()));
             }
-            brevoHeaders.set("api-key", brevoKey);
-
-            rt.postForEntity(
-                "https://api.brevo.com/v3/smtp/email",
-                new HttpEntity<>(emailPayload, brevoHeaders),
-                String.class
-            );
-
-            /* -------------------- 6. UPDATE STATUS -------------------- */
-            db().collection("certificates")
-              .document(certificateId)
-              .update("status", "sent").get();
-
-            return ResponseEntity.ok(Map.of(
-                "message", "Certificate emailed successfully",
-                "certificateId", certificateId,
-                "pdfUrl", pdfUrl
-            ));
 
         } catch (Exception e) {
             e.printStackTrace();
