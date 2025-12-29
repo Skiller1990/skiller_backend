@@ -15,21 +15,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestTemplate;
 
-import java.io.ByteArrayOutputStream;
 import java.util.Base64;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
-import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
-import java.io.File;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document.OutputSettings;
+import org.springframework.http.HttpMethod;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -232,138 +219,157 @@ public class AdminController {
     }
 
     /**
-     * Accepts certificate payload and sends an email via Brevo (Sendinblue).
-     * Expected request body: { to: string, subject?: string, html: string, fileName?: string, attachPdf?: boolean }
+     * Accepts certificate payload (studentName, courseTitle, date, to) and uses PDFMonkey
+     * to generate a PDF, stores a record in Firestore and sends the PDF via Brevo.
+     * Expected request body: { studentName, courseTitle, date, to }
      */
     @PostMapping("/send-certificate")
     public ResponseEntity<?> sendCertificate(@RequestBody Map<String, Object> body) {
         try {
             String to = (String) body.get("to");
-            String subject = (String) body.getOrDefault("subject", "Your Certificate");
-            String html = (String) body.get("html");
-            String fileName = (String) body.getOrDefault("fileName", "certificate.pdf");
-            boolean attachPdf = true;
-            if (body.containsKey("attachPdf")) {
-                Object v = body.get("attachPdf");
-                attachPdf = Boolean.TRUE.equals(v) || (v instanceof String && Boolean.parseBoolean((String)v));
+            String studentName = (String) body.get("studentName");
+            String courseTitle = (String) body.get("courseTitle");
+            String date = (String) body.get("date");
+
+            if (to == null || to.isBlank() || studentName == null || studentName.isBlank() || courseTitle == null || courseTitle.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("message", "studentName, courseTitle and to are required"));
             }
 
-            if (to == null || to.isBlank() || html == null || html.isBlank()) {
-                return ResponseEntity.badRequest().body(Map.of("message", "'to' and 'html' are required"));
+            String certificateId = generateCertificateId();
+
+            /* -------------------- 1. PDFMonkey PAYLOAD -------------------- */
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("name", studentName);
+            payload.put("course", courseTitle);
+            payload.put("date", date);
+            payload.put("certificateId", certificateId);
+
+            Map<String, Object> document = new HashMap<>();
+            document.put("document_template_id", env.getProperty("pdfmonkey.template.id"));
+            document.put("payload", payload);
+
+            HttpHeaders pdfHeaders = new HttpHeaders();
+            String pdfmonkeyKey = env.getProperty("pdfmonkey.api.key", System.getenv("PDFMONKEY_API_KEY"));
+            if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
+                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured"));
             }
-
-            // Save certificate record to Firestore before sending and reserve an ID
-            String certId = generateCertificateId();
-            Map<String,Object> certDoc = new HashMap<>();
-            certDoc.put("id", certId);
-            certDoc.put("to", to);
-            certDoc.put("subject", subject);
-            certDoc.put("fileName", fileName);
-            certDoc.put("createdAt", java.time.Instant.now().toString());
-            // optional fields from request
-            if (body.containsKey("courseId")) certDoc.put("courseId", body.get("courseId"));
-            if (body.containsKey("studentName")) certDoc.put("studentName", body.get("studentName"));
-            certDoc.put("status", "pending");
-            db().collection("certificates").document(certId).set(certDoc).get();
-
-            // Replace placeholder in HTML with actual certificate ID so it appears on the certificate
-            if (html != null) {
-                html = html.replace("%%CERT_ID%%", certId);
-                // store a small preview/snippet of rendered HTML for debugging/audit
-                try {
-                    String preview = html.length() > 2000 ? html.substring(0, 2000) : html;
-                    certDoc.put("sentHtmlPreview", preview);
-                    db().collection("certificates").document(certId).update(certDoc).get();
-                } catch (Exception ignore) {}
-            }
-
-            // Optionally convert HTML to PDF. First convert HTML to well-formed XHTML using jsoup
-            String attachmentBase64 = null;
-            if (attachPdf) {
-                // Clean and convert to XHTML
-                try {
-                    // Embed Google Fonts (if any) as data: URIs so PDF renderer uses same fonts as browser
-                    html = embedGoogleFonts(html);
-
-                    OutputSettings settings = new OutputSettings();
-                    settings.syntax(OutputSettings.Syntax.xml);
-                    settings.escapeMode(org.jsoup.nodes.Entities.EscapeMode.xhtml);
-                    settings.charset(java.nio.charset.StandardCharsets.UTF_8);
-                    String xhtml = Jsoup.parse(html).outputSettings(settings).outerHtml();
-
-                    // Try using Puppeteer-based renderer for pixel-perfect output
-                    byte[] pdfBytes = null;
-                    try {
-                        pdfBytes = runPuppeteerPdf(xhtml);
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                    }
-
-                    // Fallback to openhtmltopdf if Puppeteer isn't available or fails
-                    if (pdfBytes == null) {
-                        ByteArrayOutputStream os = new ByteArrayOutputStream();
-                        PdfRendererBuilder builder = new PdfRendererBuilder();
-                        builder.withHtmlContent(xhtml, null);
-                        builder.toStream(os);
-                        builder.run();
-                        pdfBytes = os.toByteArray();
-                    }
-                    attachmentBase64 = Base64.getEncoder().encodeToString(pdfBytes);
-                } catch (Exception pdfEx) {
-                    // fallback: log and continue sending HTML-only email
-                    pdfEx.printStackTrace();
-                    System.err.println("PDF conversion failed, will send HTML-only email: " + pdfEx.getMessage());
-                }
-            }
-
-            // Build request payload for Brevo API v3
-            Map<String, Object> sendPayload = new HashMap<>();
-            Map<String, String> sender = new HashMap<>();
-            sender.put("name", env.getProperty("brevo.sender.name", "Skiller Classes"));
-            sender.put("email", env.getProperty("brevo.sender.email", "support@skillerclasses.com"));
-            sendPayload.put("sender", sender);
-
-            List<Map<String,String>> toList = new ArrayList<>();
-            Map<String,String> toMap = new HashMap<>();
-            toMap.put("email", to);
-            toList.add(toMap);
-            sendPayload.put("to", toList);
-            sendPayload.put("subject", subject);
-            sendPayload.put("htmlContent", html);
-
-            if (attachmentBase64 != null) {
-                List<Map<String,String>> attachments = new ArrayList<>();
-                Map<String,String> a = new HashMap<>();
-                a.put("content", attachmentBase64);
-                a.put("name", fileName.endsWith(".pdf") ? fileName : fileName + ".pdf");
-                a.put("contentType", "application/pdf");
-                attachments.add(a);
-                sendPayload.put("attachment", attachments);
-            }
-
-            String apiKey = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
-            if (apiKey == null || apiKey.isBlank()) {
-                return ResponseEntity.status(500).body(Map.of("message", "Brevo API key not configured"));
-            }
+            pdfHeaders.setBearerAuth(pdfmonkeyKey);
+            pdfHeaders.setContentType(MediaType.APPLICATION_JSON);
 
             RestTemplate rt = new RestTemplate();
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.set("api-key", apiKey);
 
-            HttpEntity<Map<String,Object>> req = new HttpEntity<>(sendPayload, headers);
-            String url = "https://api.brevo.com/v3/smtp/email";
-            var resp = rt.postForEntity(url, req, String.class);
+            ResponseEntity<Map> createResp = rt.postForEntity(
+                "https://api.pdfmonkey.io/api/v1/documents",
+                new HttpEntity<>(Map.of("document", document), pdfHeaders),
+                Map.class
+            );
 
-            // update firestore record with result
-            certDoc.put("status", resp.getStatusCode().is2xxSuccessful() ? "sent" : "failed");
-            certDoc.put("brevoResponse", resp.getBody());
-            db().collection("certificates").document(certId).update(certDoc).get();
+            if (createResp == null || createResp.getBody() == null || createResp.getBody().get("document") == null) {
+                return ResponseEntity.status(500).body(Map.of("message", "Failed to create PDF document"));
+            }
 
-            return ResponseEntity.status(resp.getStatusCode()).body(Map.of("message", "Certificate email sent", "certificateId", certId, "brevoResp", resp.getBody()));
+            Map doc = (Map) createResp.getBody().get("document");
+            String documentId = String.valueOf(doc.get("id"));
+
+            /* -------------------- 2. POLL PDFMONKEY (RETRY) -------------------- */
+            String status = "pending";
+            int attempts = 0;
+
+            while (!"success".equals(status) && attempts < 10) {
+                Thread.sleep(2000);
+                attempts++;
+
+                ResponseEntity<Map> statusResp = rt.exchange(
+                    "https://api.pdfmonkey.io/api/v1/documents/" + documentId,
+                    HttpMethod.GET,
+                    new HttpEntity<>(pdfHeaders),
+                    Map.class
+                );
+
+                if (statusResp == null || statusResp.getBody() == null) break;
+                Map d = (Map) statusResp.getBody().get("document");
+                if (d == null) break;
+                status = String.valueOf(d.get("status"));
+            }
+
+            if (!"success".equals(status)) {
+                return ResponseEntity.status(500)
+                    .body(Map.of("message", "PDF generation failed"));
+            }
+
+            /* -------------------- 3. DOWNLOAD PDF -------------------- */
+            ResponseEntity<byte[]> pdfResp = rt.exchange(
+                "https://api.pdfmonkey.io/api/v1/documents/" + documentId + "/download",
+                HttpMethod.GET,
+                new HttpEntity<>(pdfHeaders),
+                byte[].class
+            );
+
+            byte[] pdfBytes = pdfResp == null ? null : pdfResp.getBody();
+            if (pdfBytes == null) return ResponseEntity.status(500).body(Map.of("message", "Failed to download PDF"));
+            String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
+
+            String pdfUrl = "https://api.pdfmonkey.io/api/v1/documents/" + documentId + "/download";
+
+            /* -------------------- 4. STORE IN FIRESTORE -------------------- */
+            Map<String, Object> certDoc = new HashMap<>();
+            certDoc.put("certificateId", certificateId);
+            certDoc.put("studentName", studentName);
+            certDoc.put("courseTitle", courseTitle);
+            certDoc.put("email", to);
+            certDoc.put("pdfUrl", pdfUrl);
+            certDoc.put("status", "generated");
+            certDoc.put("createdAt", java.time.Instant.now().toString());
+
+            db().collection("certificates").document(certificateId).set(certDoc).get();
+
+            /* -------------------- 5. SEND EMAIL (BREVO) -------------------- */
+            Map<String, Object> attachment = new HashMap<>();
+            attachment.put("content", pdfBase64);
+            attachment.put("name", "certificate.pdf");
+
+            Map<String, Object> emailPayload = new HashMap<>();
+            emailPayload.put("subject", "Your Certificate of Completion");
+            emailPayload.put("htmlContent",
+                "<p>Congratulations <b>" + studentName +
+                "</b>!<br/>Your certificate is attached.</p>");
+
+            emailPayload.put("to", List.of(Map.of("email", to)));
+            emailPayload.put("sender", Map.of(
+                "email", env.getProperty("brevo.sender.email"),
+                "name", env.getProperty("brevo.sender.name")
+            ));
+            emailPayload.put("attachment", List.of(attachment));
+
+            HttpHeaders brevoHeaders = new HttpHeaders();
+            brevoHeaders.setContentType(MediaType.APPLICATION_JSON);
+            String brevoKey = env.getProperty("brevo.api.key", System.getenv("BREVO_API_KEY"));
+            if (brevoKey == null || brevoKey.isBlank()) {
+                return ResponseEntity.status(500).body(Map.of("message", "Brevo API key not configured"));
+            }
+            brevoHeaders.set("api-key", brevoKey);
+
+            rt.postForEntity(
+                "https://api.brevo.com/v3/smtp/email",
+                new HttpEntity<>(emailPayload, brevoHeaders),
+                String.class
+            );
+
+            /* -------------------- 6. UPDATE STATUS -------------------- */
+            db().collection("certificates")
+              .document(certificateId)
+              .update("status", "sent").get();
+
+            return ResponseEntity.ok(Map.of(
+                "message", "Certificate emailed successfully",
+                "certificateId", certificateId,
+                "pdfUrl", pdfUrl
+            ));
+
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.internalServerError().body(Map.of("message", "Failed to send certificate", "error", e.getMessage()));
+            return ResponseEntity.internalServerError()
+                .body(Map.of("message", "Certificate process failed", "error", e.getMessage()));
         }
     }
 
@@ -390,93 +396,5 @@ public class AdminController {
         int max = 99_999_999;
         int num = java.util.concurrent.ThreadLocalRandom.current().nextInt(min, max + 1);
         return String.valueOf(num);
-    }
-
-    /**
-     * Fetch Google Fonts CSS referenced in the HTML and inline fonts as data: URIs.
-     * This helps PDF renderers (openhtmltopdf) use the same fonts as the browser preview.
-     */
-    private String embedGoogleFonts(String html) {
-        if (html == null) return null;
-        try {
-            org.jsoup.nodes.Document doc = Jsoup.parse(html);
-            Elements links = doc.select("link[href]");
-            for (Element l : links) {
-                String href = l.attr("href");
-                if (href != null && href.contains("fonts.googleapis.com")) {
-                    RestTemplate rt = new RestTemplate();
-                    String css = rt.getForObject(href, String.class);
-                    if (css == null) continue;
-
-                    Pattern p = Pattern.compile("url\\(([^)]+)\\)");
-                    Matcher m = p.matcher(css);
-                    StringBuffer sb = new StringBuffer();
-                    while (m.find()) {
-                        String fontUrl = m.group(1).trim();
-                        // remove surrounding quotes if present
-                        fontUrl = fontUrl.replaceAll("^['\"]|['\"]$", "");
-                        if (!fontUrl.startsWith("http")) {
-                            m.appendReplacement(sb, m.group(0));
-                            continue;
-                        }
-                        try {
-                            byte[] fontBytes = rt.getForObject(fontUrl, byte[].class);
-                            String mime = fontUrl.endsWith(".woff2") ? "font/woff2" : fontUrl.endsWith(".woff") ? "font/woff" : "application/octet-stream";
-                            String base64 = Base64.getEncoder().encodeToString(fontBytes);
-                            String dataUrl = "url('data:" + mime + ";base64," + base64 + "')";
-                            m.appendReplacement(sb, Matcher.quoteReplacement(dataUrl));
-                        } catch (Exception fe) {
-                            // if fetching the font fails, keep the original url
-                            m.appendReplacement(sb, m.group(0));
-                        }
-                    }
-                    m.appendTail(sb);
-
-                    Element style = doc.head().appendElement("style");
-                    style.attr("type", "text/css");
-                    style.appendText(sb.toString());
-                    l.remove();
-                }
-            }
-            return doc.outerHtml();
-        } catch (Exception e) {
-            e.printStackTrace();
-            return html;
-        }
-    }
-
-    /**
-     * Run the Node Puppeteer script to render the supplied HTML to PDF and return the PDF bytes.
-     * Returns null if the renderer isn't available or fails, allowing the caller to fallback.
-     */
-    private byte[] runPuppeteerPdf(String html) throws Exception {
-        if (html == null) return null;
-        Path tmpHtml = Files.createTempFile("cert-", ".html");
-        try {
-            Files.writeString(tmpHtml, html, StandardCharsets.UTF_8);
-            // script location relative to project root
-            String script = "renderer/render-pdf.js";
-            ProcessBuilder pb = new ProcessBuilder("node", script, tmpHtml.toAbsolutePath().toString());
-            pb.directory(new File(System.getProperty("user.dir")));
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    out.append(line).append('\n');
-                }
-            }
-            int exit = p.waitFor();
-            if (exit != 0) {
-                System.err.println("Puppeteer renderer failed (exit=" + exit + "):\n" + out.toString());
-                return null;
-            }
-            String base64 = out.toString().trim();
-            if (base64.isEmpty()) return null;
-            return Base64.getDecoder().decode(base64);
-        } finally {
-            try { Files.deleteIfExists(tmpHtml); } catch (Exception ignore) {}
-        }
     }
 }
