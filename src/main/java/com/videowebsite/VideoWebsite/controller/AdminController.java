@@ -250,6 +250,11 @@ public class AdminController {
 
             HttpHeaders pdfHeaders = new HttpHeaders();
             String pdfmonkeyKey = env.getProperty("pdfmonkey.api.key", System.getenv("PDFMONKEY_API_KEY"));
+            // Backwards-compatible fallback: some deploy setups may expose the key as 'pdfmon'
+            if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
+                String alt = env.getProperty("pdfmon", System.getenv("pdfmon"));
+                if (alt != null && !alt.isBlank()) pdfmonkeyKey = alt;
+            }
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
                 return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured"));
             }
