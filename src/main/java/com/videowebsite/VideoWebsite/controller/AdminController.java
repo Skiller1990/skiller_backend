@@ -249,14 +249,14 @@ public class AdminController {
             document.put("payload", payload);
 
             HttpHeaders pdfHeaders = new HttpHeaders();
-            String pdfmonkeyKey = env.getProperty("pdfmonkey.api.key", System.getenv("PDFMONKEY_API_KEY"));
-            // Backwards-compatible fallback: some deploy setups may expose the key as 'pdfmon'
+            // Prefer a single canonical environment variable: PDFMONKEY_API_KEY
+            String pdfmonkeyKey = System.getenv("PDFMONKEY_API_KEY");
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
-                String alt = env.getProperty("pdfmon", System.getenv("pdfmon"));
-                if (alt != null && !alt.isBlank()) pdfmonkeyKey = alt;
+                // fallback to Spring property (if set via application.properties or platform mapping)
+                pdfmonkeyKey = env.getProperty("pdfmonkey.api.key");
             }
             if (pdfmonkeyKey == null || pdfmonkeyKey.isBlank()) {
-                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured"));
+                return ResponseEntity.status(500).body(Map.of("message", "PDFMonkey API key not configured (set PDFMONKEY_API_KEY)"));
             }
             pdfHeaders.setBearerAuth(pdfmonkeyKey);
             pdfHeaders.setContentType(MediaType.APPLICATION_JSON);
