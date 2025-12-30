@@ -6,6 +6,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.math.BigInteger;
+import java.security.MessageDigest;
+import java.nio.charset.StandardCharsets;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -263,13 +266,37 @@ public class AdminController {
             }
 
             // Save certificate record to Firestore before sending and reserve an ID
-            String certId = generateCertificateId();
+            // Generate a deterministic certificate id based on recipient email + courseId so it is stable per user+course
+            String certId = null;
+            try {
+                String courseIdForKey = body.containsKey("courseId") ? String.valueOf(body.get("courseId")) : "";
+                certId = generateDeterministicCertificateId(to, courseIdForKey);
+            } catch (Exception ex) {
+                // fallback to random id
+                certId = generateCertificateId();
+            }
+
             Map<String,Object> certDoc = new HashMap<>();
             certDoc.put("id", certId);
             certDoc.put("to", to);
             certDoc.put("subject", subject);
             certDoc.put("fileName", fileName);
-            certDoc.put("createdAt", java.time.Instant.now().toString());
+            // If a certificate doc already exists for this deterministic id, preserve its createdAt
+            try {
+                var existingSnap = db().collection("certificates").document(certId).get().get();
+                if (existingSnap.exists()) {
+                    Object existingCreated = existingSnap.getString("createdAt");
+                    if (existingCreated != null) {
+                        certDoc.put("createdAt", existingCreated);
+                    } else {
+                        certDoc.put("createdAt", java.time.Instant.now().toString());
+                    }
+                } else {
+                    certDoc.put("createdAt", java.time.Instant.now().toString());
+                }
+            } catch (Exception ignore) {
+                certDoc.put("createdAt", java.time.Instant.now().toString());
+            }
             // optional fields from request
             if (body.containsKey("courseId")) certDoc.put("courseId", body.get("courseId"));
             if (body.containsKey("studentName")) certDoc.put("studentName", body.get("studentName"));
@@ -376,8 +403,8 @@ public class AdminController {
 
                         // Course title (centered below name)
                         Paragraph courseP = new Paragraph(courseTitle).setFont(font).setFontSize(20);
-                        // move course title slightly down
-                        document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.36f, TextAlignment.CENTER);
+                        // move course title slightly more down as requested
+                        document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.32f, TextAlignment.CENTER);
 
                         // Date (just the date value) - move slightly right and down from previous position
                         Paragraph dateP = new Paragraph(dateStr).setFont(font).setFontSize(12);
@@ -504,5 +531,23 @@ public class AdminController {
         int max = 99_999_999;
         int num = java.util.concurrent.ThreadLocalRandom.current().nextInt(min, max + 1);
         return String.valueOf(num);
+    }
+
+    /**
+     * Generate a deterministic 8-digit certificate id from a key (email + courseId).
+     * This ensures the same user+course receives the same certificate id across requests.
+     */
+    private String generateDeterministicCertificateId(String email, String courseId) {
+        try {
+            String key = (email == null ? "" : email.toLowerCase()) + ":" + (courseId == null ? "" : courseId);
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(key.getBytes(StandardCharsets.UTF_8));
+            BigInteger bi = new BigInteger(1, digest);
+            int mod = 90_000_000; // keep result within 0..(mod-1)
+            int val = bi.mod(BigInteger.valueOf(mod)).intValue() + 10_000_000; // shift to 10,000,000..99,999,999
+            return String.valueOf(val);
+        } catch (Exception e) {
+            return generateCertificateId();
+        }
     }
 }
