@@ -150,6 +150,23 @@
 			<version>1.16.1</version>
 		</dependency>
 
+		<!-- iText7 for image-based PDF generation (used to overlay text on a certificate PNG) -->
+		<dependency>
+			<groupId>com.itextpdf</groupId>
+			<artifactId>kernel</artifactId>
+			<version>7.2.4</version>
+		</dependency>
+		<dependency>
+			<groupId>com.itextpdf</groupId>
+			<artifactId>layout</artifactId>
+			<version>7.2.4</version>
+		</dependency>
+		<dependency>
+			<groupId>com.itextpdf</groupId>
+			<artifactId>io</artifactId>
+			<version>7.2.4</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>
