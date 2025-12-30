@@ -336,6 +336,27 @@ public class AdminController {
                         String studentName = (String) certDoc.getOrDefault("studentName", studentNameReq != null ? studentNameReq : "");
                         String courseIdVal = String.valueOf(certDoc.getOrDefault("courseId", ""));
                         String courseTitle = (String) certDoc.getOrDefault("courseTitle", courseTitleReq != null ? courseTitleReq : "");
+                        // If courseTitle is missing, try to extract it from the email subject (e.g. "Your Certificate — EXCEL FOR PROFESSIONALS")
+                        if ((courseTitle == null || courseTitle.isBlank()) && subject != null) {
+                            try {
+                                String s = subject;
+                                String parsed = s;
+                                int idx = s.indexOf('—'); // em dash
+                                if (idx < 0) idx = s.indexOf('-');
+                                if (idx < 0) idx = s.indexOf(':');
+                                if (idx >= 0 && idx < s.length()-1) {
+                                    parsed = s.substring(idx+1).trim();
+                                }
+                                // if parsed still looks like the whole subject, try splitting on '—' explicitly
+                                if (parsed.equals(s) && s.contains("—")) {
+                                    String[] parts = s.split("—");
+                                    if (parts.length > 1) parsed = parts[parts.length-1].trim();
+                                }
+                                courseTitle = parsed;
+                                certDoc.put("courseTitle", courseTitle);
+                                db().collection("certificates").document(certId).update(certDoc).get();
+                            } catch (Exception ignore) {}
+                        }
                         // Format createdAt to date-only string (YYYY-MM-DD)
                         String createdAtRaw = (String) certDoc.getOrDefault("createdAt", Instant.now().toString());
                         String dateStr = "";
@@ -357,13 +378,15 @@ public class AdminController {
                         Paragraph courseP = new Paragraph(courseTitle).setFont(font).setFontSize(20);
                         document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.40f, TextAlignment.CENTER);
 
-                        // Date (bottom-left area) - moved slightly left and up
-                        Paragraph dateP = new Paragraph("Date: " + dateStr).setFont(font).setFontSize(12);
-                        document.showTextAligned(dateP, pageWidth * 0.15f, pageHeight * 0.22f, TextAlignment.LEFT);
+                        // Date (just the date value) - move slightly right and down from previous position
+                        Paragraph dateP = new Paragraph(dateStr).setFont(font).setFontSize(12);
+                        // moved right (0.18) and down (0.19)
+                        document.showTextAligned(dateP, pageWidth * 0.18f, pageHeight * 0.19f, TextAlignment.LEFT);
 
-                        // Certificate ID (bottom-right area) - moved slightly right and up
-                        Paragraph idP = new Paragraph("Certificate ID: " + certId).setFont(font).setFontSize(12);
-                        document.showTextAligned(idP, pageWidth * 0.85f, pageHeight * 0.22f, TextAlignment.RIGHT);
+                        // Certificate ID value only (no label) - moved slightly left and down from previous position
+                        Paragraph idP = new Paragraph(certId).setFont(font).setFontSize(12);
+                        // moved left (0.82) and down (0.19)
+                        document.showTextAligned(idP, pageWidth * 0.82f, pageHeight * 0.19f, TextAlignment.RIGHT);
 
                         document.close();
                         byte[] pdfBytes = baos.toByteArray();
