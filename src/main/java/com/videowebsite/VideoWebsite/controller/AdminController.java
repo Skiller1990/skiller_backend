@@ -432,7 +432,18 @@ public class AdminController {
             toList.add(toMap);
             sendPayload.put("to", toList);
             sendPayload.put("subject", subject);
-            sendPayload.put("htmlContent", html);
+            // Brevo requires either htmlContent or textContent. If frontend didn't provide HTML,
+            // create a minimal HTML body using the studentName and courseTitle so the API call succeeds.
+            if (html != null && !html.isBlank()) {
+                sendPayload.put("htmlContent", html);
+            } else {
+                String studentNameForEmail = (String) certDoc.getOrDefault("studentName", studentNameReq != null ? studentNameReq : "");
+                String courseTitleForEmail = (String) certDoc.getOrDefault("courseTitle", courseTitleReq != null ? courseTitleReq : "");
+                String simpleHtml = "<p>Hi " + (studentNameForEmail == null || studentNameForEmail.isBlank() ? "Learner" : studentNameForEmail) + ",</p>"
+                        + "<p>Your certificate for <strong>" + (courseTitleForEmail == null ? "the course" : courseTitleForEmail) + "</strong> is attached.</p>"
+                        + "<p>Best regards,<br/>Skiller Classes</p>";
+                sendPayload.put("htmlContent", simpleHtml);
+            }
 
             if (attachmentBase64 != null) {
                 List<Map<String,String>> attachments = new ArrayList<>();
