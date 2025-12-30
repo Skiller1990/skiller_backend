@@ -19,6 +19,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.URL;
 import java.util.Base64;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document.OutputSettings;
@@ -244,6 +247,9 @@ public class AdminController {
             String to = (String) body.get("to");
             String subject = (String) body.getOrDefault("subject", "Your Certificate");
             String html = (String) body.get("html");
+            // support minimal payload: studentName and courseTitle when html is not provided
+            String studentNameReq = (String) body.get("studentName");
+            String courseTitleReq = (String) body.get("courseTitle");
             String fileName = (String) body.getOrDefault("fileName", "certificate.pdf");
             boolean attachPdf = true;
             if (body.containsKey("attachPdf")) {
@@ -251,8 +257,9 @@ public class AdminController {
                 attachPdf = Boolean.TRUE.equals(v) || (v instanceof String && Boolean.parseBoolean((String)v));
             }
 
-            if (to == null || to.isBlank() || html == null || html.isBlank()) {
-                return ResponseEntity.badRequest().body(Map.of("message", "'to' and 'html' are required"));
+            // Require either html OR both studentName and courseTitle
+            if (to == null || to.isBlank() || ((html == null || html.isBlank()) && (studentNameReq == null || studentNameReq.isBlank() || courseTitleReq == null || courseTitleReq.isBlank()))) {
+                return ResponseEntity.badRequest().body(Map.of("message", "'to' and either 'html' or both 'studentName' and 'courseTitle' are required"));
             }
 
             // Save certificate record to Firestore before sending and reserve an ID
@@ -266,10 +273,12 @@ public class AdminController {
             // optional fields from request
             if (body.containsKey("courseId")) certDoc.put("courseId", body.get("courseId"));
             if (body.containsKey("studentName")) certDoc.put("studentName", body.get("studentName"));
+            // store courseTitle if provided
+            if (body.containsKey("courseTitle")) certDoc.put("courseTitle", body.get("courseTitle"));
             certDoc.put("status", "pending");
             db().collection("certificates").document(certId).set(certDoc).get();
 
-            // Replace placeholder in HTML with actual certificate ID so it appears on the certificate
+            // Replace placeholder in HTML with actual certificate ID so it appears on the certificate (only if html provided)
             if (html != null) {
                 html = html.replace("%%CERT_ID%%", certId);
                 // store a small preview/snippet of rendered HTML for debugging/audit
@@ -324,28 +333,37 @@ public class AdminController {
                         float pageWidth = pdfDoc.getDefaultPageSize().getWidth();
                         float pageHeight = pdfDoc.getDefaultPageSize().getHeight();
 
-                        String studentName = (String) certDoc.getOrDefault("studentName", "");
+                        String studentName = (String) certDoc.getOrDefault("studentName", studentNameReq != null ? studentNameReq : "");
                         String courseIdVal = String.valueOf(certDoc.getOrDefault("courseId", ""));
-                        String courseTitle = (String) certDoc.getOrDefault("courseTitle", "");
-                        String dateStr = (String) certDoc.getOrDefault("createdAt", java.time.Instant.now().toString());
+                        String courseTitle = (String) certDoc.getOrDefault("courseTitle", courseTitleReq != null ? courseTitleReq : "");
+                        // Format createdAt to date-only string (YYYY-MM-DD)
+                        String createdAtRaw = (String) certDoc.getOrDefault("createdAt", Instant.now().toString());
+                        String dateStr = "";
+                        try {
+                            Instant inst = Instant.parse(createdAtRaw);
+                            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.of("UTC"));
+                            dateStr = fmt.format(inst);
+                        } catch (Exception ex) {
+                            dateStr = createdAtRaw;
+                        }
 
                         var font = PdfFontFactory.createFont(StandardFonts.HELVETICA);
 
-                        // Student name (centered, large)
+                        // Student name (centered, slightly lower)
                         Paragraph nameP = new Paragraph(studentName).setFont(font).setFontSize(36).setBold();
-                        document.showTextAligned(nameP, pageWidth / 2f, pageHeight * 0.55f, TextAlignment.CENTER);
+                        document.showTextAligned(nameP, pageWidth / 2f, pageHeight * 0.50f, TextAlignment.CENTER);
 
                         // Course title (centered below name)
                         Paragraph courseP = new Paragraph(courseTitle).setFont(font).setFontSize(20);
-                        document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.45f, TextAlignment.CENTER);
+                        document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.40f, TextAlignment.CENTER);
 
-                        // Date (bottom-left area)
+                        // Date (bottom-left area) - moved slightly left and up
                         Paragraph dateP = new Paragraph("Date: " + dateStr).setFont(font).setFontSize(12);
-                        document.showTextAligned(dateP, pageWidth * 0.2f, pageHeight * 0.18f, TextAlignment.LEFT);
+                        document.showTextAligned(dateP, pageWidth * 0.15f, pageHeight * 0.22f, TextAlignment.LEFT);
 
-                        // Certificate ID or Course ID (bottom-right area)
+                        // Certificate ID (bottom-right area) - moved slightly right and up
                         Paragraph idP = new Paragraph("Certificate ID: " + certId).setFont(font).setFontSize(12);
-                        document.showTextAligned(idP, pageWidth * 0.8f, pageHeight * 0.18f, TextAlignment.RIGHT);
+                        document.showTextAligned(idP, pageWidth * 0.85f, pageHeight * 0.22f, TextAlignment.RIGHT);
 
                         document.close();
                         byte[] pdfBytes = baos.toByteArray();
