@@ -376,7 +376,8 @@ public class AdminController {
 
                         // Course title (centered below name)
                         Paragraph courseP = new Paragraph(courseTitle).setFont(font).setFontSize(20);
-                        document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.40f, TextAlignment.CENTER);
+                        // move course title slightly down
+                        document.showTextAligned(courseP, pageWidth / 2f, pageHeight * 0.36f, TextAlignment.CENTER);
 
                         // Date (just the date value) - move slightly right and down from previous position
                         Paragraph dateP = new Paragraph(dateStr).setFont(font).setFontSize(12);
@@ -385,8 +386,8 @@ public class AdminController {
 
                         // Certificate ID value only (no label) - moved slightly left and down from previous position
                         Paragraph idP = new Paragraph(certId).setFont(font).setFontSize(12);
-                        // moved left (0.82) and down (0.19)
-                        document.showTextAligned(idP, pageWidth * 0.82f, pageHeight * 0.19f, TextAlignment.RIGHT);
+                        // move certificate id a bit more to the left
+                        document.showTextAligned(idP, pageWidth * 0.78f, pageHeight * 0.19f, TextAlignment.RIGHT);
 
                         document.close();
                         byte[] pdfBytes = baos.toByteArray();
