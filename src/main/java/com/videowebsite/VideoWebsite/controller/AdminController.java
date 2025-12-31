@@ -389,7 +389,7 @@ public class AdminController {
                         String dateStr = "";
                         try {
                             Instant inst = Instant.parse(createdAtRaw);
-                            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.of("UTC"));
+                            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd-MM-yyyy").withZone(ZoneId.of("UTC"));
                             dateStr = fmt.format(inst);
                         } catch (Exception ex) {
                             dateStr = createdAtRaw;
